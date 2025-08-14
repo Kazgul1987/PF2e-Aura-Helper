@@ -4,7 +4,7 @@ Hooks.on('pf2e.startTurn', async (combatant) => {
   if (!partyMembers.some((member) => member === token.actor)) return;
 
   const enemies = canvas.tokens.placeables.filter(
-    (t) => t.actor && t.actor.isEnemy(combatant.actor)
+    (t) => t.actor && t.actor.isEnemyOf(combatant.actor)
   );
 
   for (const enemy of enemies) {
@@ -12,9 +12,11 @@ Hooks.on('pf2e.startTurn', async (combatant) => {
     for (const aura of auras) {
       const distance = canvas.grid.measureDistance(token, enemy);
       if (distance > aura.radius) continue;
-      const originUuid = aura.origin?.uuid ?? aura.uuid ?? '';
+      const origin = aura.effects?.[0]?.parent ?? null;
+      const auraName = origin?.name ?? aura.slug;
+      const originUuid = origin?.uuid ?? '';
       const link = originUuid ? ` @UUID[${originUuid}]` : '';
-      const content = `${token.name} beginnt seinen Zug innerhalb der Aura ${aura.name} von ${enemy.name}.${link}`;
+      const content = `${token.name} beginnt seinen Zug innerhalb der Aura ${auraName} von ${enemy.name}.${link}`;
       const speaker = ChatMessage.getSpeaker({ token: token.document });
       await ChatMessage.create({ content, speaker });
     }
