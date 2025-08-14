@@ -5,13 +5,13 @@
   "description": "Erinnert Spieler, wenn sie ihren Zug in einer feindlichen Aura beginnen und verlinkt die Aura im Chat.",
   "version": "0.1.0",
   "type": "module",
-  "authors": [{ "name": "AI Assistant" }],
+  "authors": [{ "name": "Kazgul1987" }],
   "systems": ["pf2e"],
   "compatibility": {
     "minimum": "13",
     "verified": "13"
   },
   "scripts": ["scripts/aura-helper.js"],
-  "manifest": "https://github.com/yourname/PF2e-Aura-Helper/raw/main/module.json",
-  "download": "https://github.com/yourname/PF2e-Aura-Helper/archive/refs/heads/main.zip"
+  "manifest": "https://raw.githubusercontent.com/Kazgul1987/PF2e-Aura-Helper/main/module.json",
+  "download": "https://github.com/Kazgul1987/PF2e-Aura-Helper/releases/latest/download/module.zip"
 }
