@@ -2,7 +2,7 @@ Hooks.on('pf2e.startTurn', async (combatant) => {
   console.debug('[Aura Helper] pf2e.startTurn', { combatant });
   const token = combatant.token?.object ?? combatant.token;
   const partyMembers = game.actors.party?.members ?? [];
-  if (!partyMembers.some((member) => member === token.actor)) return;
+  if (!partyMembers.some((member) => member.id === token.actor.id)) return;
 
   const enemies = canvas.tokens.placeables.filter(
     (t) => t.actor && t.actor.isEnemyOf(combatant.actor)
