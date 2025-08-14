@@ -13,7 +13,15 @@ Hooks.on('pf2e.startTurn', async (combatant) => {
       const distance = canvas.grid.measureDistance(token, enemy);
       if (distance > aura.radius) continue;
       const effect = aura.effects?.[0];
-      const originUuid = effect?.origin ?? effect?.sourceId ?? null;
+      let originUuid =
+        effect?.origin ??
+        effect?.sourceId ??
+        effect?.system?.context?.origin?.uuid ??
+        null;
+      if (!originUuid) {
+        originUuid =
+          enemy.actor.items.find((i) => i.slug === aura.slug)?.uuid ?? null;
+      }
       const origin = originUuid ? await fromUuid(originUuid) : null;
       const auraName = origin?.name ?? aura.slug;
       const auraLink = originUuid ? `@UUID[${originUuid}]{${auraName}}` : auraName;
