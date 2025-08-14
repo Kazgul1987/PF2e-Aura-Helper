@@ -14,9 +14,8 @@ Hooks.on('pf2e.startTurn', async (combatant) => {
       if (distance > aura.radius) continue;
       const origin = aura.effects?.[0]?.parent ?? null;
       const auraName = origin?.name ?? aura.slug;
-      const originUuid = origin?.uuid ?? '';
-      const link = originUuid ? ` @UUID[${originUuid}]` : '';
-      const content = `${token.name} beginnt seinen Zug innerhalb der Aura ${auraName} von ${enemy.name}.${link}`;
+      const auraLink = origin?.uuid ? `@UUID[${origin.uuid}]{${auraName}}` : auraName;
+      const content = `${token.name} beginnt seinen Zug innerhalb der Aura ${auraLink} von ${enemy.name}.`;
       const speaker = ChatMessage.getSpeaker({ token: token.document });
       await ChatMessage.create({ content, speaker });
     }
