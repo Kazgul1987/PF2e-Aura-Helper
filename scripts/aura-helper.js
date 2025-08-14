@@ -18,6 +18,9 @@ Hooks.on('pf2e.startTurn', async (combatant) => {
       const content = `${token.name} beginnt seinen Zug innerhalb der Aura ${auraLink} von ${enemy.name}.`;
       const speaker = ChatMessage.getSpeaker({ token: token.document });
       await ChatMessage.create({ content, speaker });
+      if (origin) {
+        await origin.toMessage({}, { speaker });
+      }
     }
   }
 });
