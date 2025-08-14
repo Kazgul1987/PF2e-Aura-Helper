@@ -103,14 +103,15 @@ Hooks.on('updateToken', async (tokenDoc, change, _options, userId) => {
   const enemies = canvas.tokens.placeables.filter(
     (t) => t.actor && t.actor.isEnemyOf(token.actor)
   );
-  const previousCenter = {
-    x: (tokenDoc._previous?.x ?? token.x) + token.w / 2,
-    y: (tokenDoc._previous?.y ?? token.y) + token.h / 2,
+  const previousCenter = token.center;
+  const newCenter = {
+    x: (change.x ?? tokenDoc.x) + token.w / 2,
+    y: (change.y ?? tokenDoc.y) + token.h / 2,
   };
   for (const enemy of enemies) {
     const auras = enemy.actor?.auras ? [...enemy.actor.auras.values()] : [];
     for (const aura of auras) {
-      const newDistance = canvas.grid.measureDistance(token.center, enemy.center);
+      const newDistance = canvas.grid.measureDistance(newCenter, enemy.center);
       if (newDistance > aura.radius) continue;
       const previousDistance = canvas.grid.measureDistance(previousCenter, enemy.center);
       if (previousDistance <= aura.radius) continue;
