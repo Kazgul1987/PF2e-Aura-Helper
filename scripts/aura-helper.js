@@ -44,10 +44,16 @@ Hooks.on('pf2e.startTurn', async (combatant) => {
       const auraLink = originUuid ? `@UUID[${originUuid}]{${auraName}}` : auraName;
       const content = `${token.name} beginnt seinen Zug innerhalb der Aura ${auraLink} von ${enemy.name}.`;
       console.debug('[Aura Helper] creating chat message', content);
-      const speaker = ChatMessage.getSpeaker({ token: token.document });
+      const speaker = ChatMessage.getSpeaker({
+        token: token.document,
+        actor: token.actor,
+      });
       await ChatMessage.create({ content, speaker });
       if (origin) {
-        await origin.toMessage({}, { speaker });
+        await origin.toMessage(undefined, {
+          create: true,
+          data: { speaker },
+        });
       }
     }
   }
