@@ -30,16 +30,36 @@ Hooks.on('pf2e.startTurn', async (combatant) => {
         effect?.sourceId ??
         effect?.system?.context?.origin?.uuid ??
         null;
+      let originItem = null;
       if (!originUuid) {
-        const item = enemy.actor.items.find((i) => i.slug === aura.slug);
-        console.debug('[Aura Helper] searched enemy items', {
+        originItem = enemy.actor.items.find((i) => i.slug === aura.slug) ?? null;
+        console.debug('[Aura Helper] searched enemy items by slug', {
           slug: aura.slug,
-          item,
+          item: originItem,
         });
-        originUuid = item?.uuid ?? null;
+        if (!originItem) {
+          const searchName =
+            effect?.name ?? aura.slug.replace(/-/g, ' ');
+          originItem = enemy.actor.items.find(
+            (i) => i.name.toLowerCase() === searchName.toLowerCase()
+          );
+          console.debug('[Aura Helper] searched enemy items by name', {
+            search: searchName,
+            item: originItem,
+          });
+        }
+        originUuid = originItem?.uuid ?? null;
+        if (originItem) {
+          await originItem.toMessage(undefined, { create: true });
+        } else {
+          console.warn('[Aura Helper] no matching item found for aura', {
+            aura: aura.slug,
+            enemy: enemy.name,
+          });
+        }
       }
       console.debug('[Aura Helper] resolved originUuid', originUuid);
-      const origin = originUuid ? await fromUuid(originUuid) : null;
+      const origin = originItem ?? (originUuid ? await fromUuid(originUuid) : null);
       const auraName = origin?.name ?? aura.slug;
       const auraLink = originUuid ? `@UUID[${originUuid}]{${auraName}}` : auraName;
       const content = `${token.name} beginnt seinen Zug innerhalb der Aura ${auraLink} von ${enemy.name}.`;
@@ -49,10 +69,15 @@ Hooks.on('pf2e.startTurn', async (combatant) => {
         actor: token.actor,
       });
       await ChatMessage.create({ content, speaker });
-      if (origin) {
+      if (!originItem && origin) {
         await origin.toMessage(undefined, {
           create: true,
           data: { speaker },
+        });
+      } else if (!origin) {
+        console.warn('[Aura Helper] no item to post for aura', {
+          aura: aura.slug,
+          enemy: enemy.name,
         });
       }
     }
