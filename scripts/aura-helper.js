@@ -39,9 +39,6 @@ Hooks.on('pf2e.startTurn', async (combatant) => {
         originUuid = item?.uuid ?? null;
       }
       console.debug('[Aura Helper] resolved originUuid', originUuid);
-        originUuid =
-          enemy.actor.items.find((i) => i.slug === aura.slug)?.uuid ?? null;
-      }
       const origin = originUuid ? await fromUuid(originUuid) : null;
       const auraName = origin?.name ?? aura.slug;
       const auraLink = originUuid ? `@UUID[${originUuid}]{${auraName}}` : auraName;
