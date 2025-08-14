@@ -4,7 +4,7 @@ Hooks.on('pf2e.startTurn', async (combatant) => {
   if (!partyMembers.some((member) => member === token.actor)) return;
 
   const enemies = canvas.tokens.placeables.filter(
-    (t) => t.actor && t.actor.isEnemy(combatant.actor)
+    (t) => t.actor && t.actor.isEnemyOf(combatant.actor)
   );
 
   for (const enemy of enemies) {
