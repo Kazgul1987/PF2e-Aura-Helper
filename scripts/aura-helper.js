@@ -64,7 +64,10 @@ Hooks.on('pf2e.startTurn', async (combatant) => {
   if (!partyMembers.some((member) => member.id === token.actor.id)) return;
 
   const enemies = canvas.tokens.placeables.filter(
-    (t) => t.actor && t.actor.isEnemyOf(combatant.actor)
+    (t) =>
+      t.actor &&
+      t.actor.isEnemyOf(combatant.actor) &&
+      (t.isVisible ?? !t.document.hidden)
   );
   console.debug('[Aura Helper] enemies in scene', enemies.map((e) => e.name));
 
@@ -101,7 +104,10 @@ Hooks.on('updateToken', async (tokenDoc, change, _options, userId) => {
   if (!partyMembers.some((member) => member.id === token.actor?.id)) return;
 
   const enemies = canvas.tokens.placeables.filter(
-    (t) => t.actor && t.actor.isEnemyOf(token.actor)
+    (t) =>
+      t.actor &&
+      t.actor.isEnemyOf(token.actor) &&
+      (t.isVisible ?? !t.document.hidden)
   );
   const previousCenter = token.center;
   const newCenter = {
