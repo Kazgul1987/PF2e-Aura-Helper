@@ -1,3 +1,5 @@
+const movementStarts = new Map();
+
 async function handleAura({ token, enemy, aura, message }) {
   const effect = aura.effects?.[0];
   console.debug('[Aura Helper] aura effect', effect);
@@ -64,7 +66,10 @@ Hooks.on('pf2e.startTurn', async (combatant) => {
   if (!partyMembers.some((member) => member.id === token.actor.id)) return;
 
   const enemies = canvas.tokens.placeables.filter(
-    (t) => t.actor && t.actor.isEnemyOf(combatant.actor)
+    (t) =>
+      t.actor &&
+      t.actor.isEnemyOf(combatant.actor) &&
+      (t.isVisible ?? !t.document.hidden)
   );
   console.debug('[Aura Helper] enemies in scene', enemies.map((e) => e.name));
 
@@ -101,20 +106,42 @@ Hooks.on('updateToken', async (tokenDoc, change, _options, userId) => {
   if (!partyMembers.some((member) => member.id === token.actor?.id)) return;
 
   const enemies = canvas.tokens.placeables.filter(
-    (t) => t.actor && t.actor.isEnemyOf(token.actor)
+    (t) =>
+      t.actor &&
+      t.actor.isEnemyOf(token.actor) &&
+      (t.isVisible ?? !t.document.hidden)
   );
-  const previousCenter = token.center;
-  const newCenter = {
-    x: (change.x ?? tokenDoc.x) + token.w / 2,
-    y: (change.y ?? tokenDoc.y) + token.h / 2,
-  };
+
+  if (token._movement) {
+    if (!movementStarts.has(token.id)) {
+      const startPoint =
+        token._movement?.rays?.[0]?.A ??
+        token._movement?.ray?.A ?? {
+          x: token.center.x,
+          y: token.center.y,
+        };
+      const startMap = new Map();
+      for (const enemy of enemies) {
+        const auras = enemy.actor?.auras ? [...enemy.actor.auras.values()] : [];
+        for (const aura of auras) {
+          const distance = canvas.grid.measureDistance(startPoint, enemy.center);
+          startMap.set(`${enemy.id}-${aura.slug}`, distance <= aura.radius);
+        }
+      }
+      movementStarts.set(token.id, startMap);
+    }
+    return;
+  }
+
+  const startMap = movementStarts.get(token.id) ?? new Map();
+  movementStarts.delete(token.id);
   for (const enemy of enemies) {
     const auras = enemy.actor?.auras ? [...enemy.actor.auras.values()] : [];
     for (const aura of auras) {
-      const newDistance = canvas.grid.measureDistance(newCenter, enemy.center);
-      if (newDistance > aura.radius) continue;
-      const previousDistance = canvas.grid.measureDistance(previousCenter, enemy.center);
-      if (previousDistance <= aura.radius) continue;
+      const key = `${enemy.id}-${aura.slug}`;
+      const wasInside = startMap.get(key) ?? false;
+      const newDistance = canvas.grid.measureDistance(token.center, enemy.center);
+      if (newDistance > aura.radius || wasInside) continue;
       await handleAura({
         token,
         enemy,
