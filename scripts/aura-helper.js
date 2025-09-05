@@ -232,8 +232,6 @@ Hooks.on('updateToken', async (tokenDoc, change, _options, userId) => {
         });
       }
     }
-  } else if (token._movement) {
-    return;
   }
 
   await refreshPlayerAuras();
