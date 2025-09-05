@@ -3,6 +3,15 @@ const movementStarts = new Map();
 const AURA_FLAG = 'pf2e-aura-helper';
 const AURA_SOURCE_FLAG = 'kinetic-source';
 
+function hasKineticSleetAura() {
+  return canvas.tokens.placeables.some(
+    (t) =>
+      t.actor &&
+      t.actor.itemTypes.effect.some((e) => e.slug === 'effect-kinetic-aura') &&
+      t.actor.itemTypes.effect.some((e) => e.slug === 'stance-winter-sleet')
+  );
+}
+
 async function refreshPlayerAuras() {
   const tokens = canvas.tokens.placeables.filter(
     (t) => t.actor && (t.isVisible ?? !t.document.hidden)
@@ -173,7 +182,9 @@ Hooks.on('pf2e.startTurn', async (combatant) => {
     }
   }
 
-  await refreshPlayerAuras();
+  if (hasKineticSleetAura()) {
+    await refreshPlayerAuras();
+  }
 });
 
 Hooks.on('updateToken', async (tokenDoc, change, _options, userId) => {
@@ -211,6 +222,9 @@ Hooks.on('updateToken', async (tokenDoc, change, _options, userId) => {
         }
         movementStarts.set(token.id, startMap);
       }
+      if (hasKineticSleetAura()) {
+        await refreshPlayerAuras();
+      }
       return;
     }
 
@@ -234,5 +248,7 @@ Hooks.on('updateToken', async (tokenDoc, change, _options, userId) => {
     }
   }
 
-  await refreshPlayerAuras();
+  if (hasKineticSleetAura()) {
+    await refreshPlayerAuras();
+  }
 });
