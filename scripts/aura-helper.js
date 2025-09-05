@@ -2,7 +2,6 @@ const movementStarts = new Map();
 
 const AURA_FLAG = 'pf2e-aura-helper';
 const AURA_SOURCE_FLAG = 'kinetic-source';
-const PLAYER_AURA_EFFECTS = ['effect-kinetic-aura', 'stance-winter-sleet'];
 
 async function refreshPlayerAuras() {
   const tokens = canvas.tokens.placeables.filter(
@@ -15,14 +14,21 @@ async function refreshPlayerAuras() {
 
   const active = new Map();
   for (const player of players) {
-    const effect = player.actor.itemTypes.effect.find((e) =>
-      PLAYER_AURA_EFFECTS.includes(e.slug)
+    const hasAura = player.actor.itemTypes.effect.some(
+      (e) => e.slug === 'effect-kinetic-aura'
     );
-    if (!effect) continue;
-    const auraSlug = effect.slug.replace(/^(effect|stance)-/, '');
-    const aura = player.actor.auras?.get(auraSlug);
-    if (!aura) continue;
-    active.set(player.id, { token: player, slug: auraSlug, radius: aura.radius });
+    const hasSleet = player.actor.itemTypes.effect.some(
+      (e) => e.slug === 'stance-winter-sleet'
+    );
+    if (hasAura && hasSleet) {
+      const aura = player.actor.auras?.get('kinetic-aura');
+      if (aura)
+        active.set(player.id, {
+          token: player,
+          slug: 'kinetic-aura',
+          radius: aura.radius,
+        });
+    }
   }
 
   for (const token of tokens) {
@@ -56,7 +62,7 @@ async function refreshPlayerAuras() {
             i.getFlag(AURA_FLAG, AURA_SOURCE_FLAG) === sourceId
         ) ?? null;
       if (existing) continue;
-      const offGuard = await game.pf2e.Condition.fromSlug('off-guard');
+      const offGuard = game.pf2e.ConditionManager.getCondition('off-guard');
       if (!offGuard) continue;
       const condition = offGuard.toObject();
       condition.flags ??= {};
