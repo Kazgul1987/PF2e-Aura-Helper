@@ -62,7 +62,7 @@ async function refreshPlayerAuras() {
             i.getFlag(AURA_FLAG, AURA_SOURCE_FLAG) === sourceId
         ) ?? null;
       if (existing) continue;
-      const offGuard = await game.pf2e.Condition.fromSlug('off-guard');
+      const offGuard = game.pf2e.ConditionManager.getCondition('off-guard');
       if (!offGuard) continue;
       const condition = offGuard.toObject();
       condition.flags ??= {};
