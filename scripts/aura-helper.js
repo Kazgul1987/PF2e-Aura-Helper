@@ -1,5 +1,71 @@
 const movementStarts = new Map();
 
+const AURA_FLAG = 'pf2e-aura-helper';
+const AURA_SOURCE_FLAG = 'kinetic-source';
+const PLAYER_AURA_EFFECTS = ['effect-kinetic-aura', 'stance-winter-sleet'];
+
+async function refreshPlayerAuras() {
+  const tokens = canvas.tokens.placeables.filter(
+    (t) => t.actor && (t.isVisible ?? !t.document.hidden)
+  );
+  const partyMembers = game.actors.party?.members ?? [];
+  const players = tokens.filter((t) =>
+    partyMembers.some((member) => member.id === t.actor.id)
+  );
+
+  const active = new Map();
+  for (const player of players) {
+    const effect = player.actor.itemTypes.effect.find((e) =>
+      PLAYER_AURA_EFFECTS.includes(e.slug)
+    );
+    if (!effect) continue;
+    const auraSlug = effect.slug.replace(/^(effect|stance)-/, '');
+    const aura = player.actor.auras?.get(auraSlug);
+    if (!aura) continue;
+    active.set(player.id, { token: player, slug: auraSlug, radius: aura.radius });
+  }
+
+  for (const token of tokens) {
+    const conditions =
+      token.actor?.items.filter(
+        (i) =>
+          i.slug === 'off-guard' &&
+          i.getFlag(AURA_FLAG, AURA_SOURCE_FLAG) !== undefined
+      ) ?? [];
+    for (const condition of conditions) {
+      const sourceId = condition.getFlag(AURA_FLAG, AURA_SOURCE_FLAG);
+      const source = active.get(sourceId);
+      const inRange =
+        source &&
+        canvas.grid.measureDistance(source.token, token) <= source.radius;
+      if (!inRange) {
+        await condition.delete();
+      }
+    }
+  }
+
+  for (const [sourceId, data] of active) {
+    for (const token of tokens) {
+      if (!data.token.actor.isEnemyOf(token.actor)) continue;
+      const distance = canvas.grid.measureDistance(data.token, token);
+      if (distance > data.radius) continue;
+      const existing =
+        token.actor.items.find(
+          (i) =>
+            i.slug === 'off-guard' &&
+            i.getFlag(AURA_FLAG, AURA_SOURCE_FLAG) === sourceId
+        ) ?? null;
+      if (existing) continue;
+      const offGuard = await game.pf2e.Condition.fromSlug('off-guard');
+      if (!offGuard) continue;
+      const condition = offGuard.toObject();
+      condition.flags ??= {};
+      condition.flags[AURA_FLAG] = { [AURA_SOURCE_FLAG]: sourceId };
+      await token.actor.createEmbeddedDocuments('Item', [condition]);
+    }
+  }
+}
+
 async function handleAura({ token, enemy, aura, message }) {
   const effect = aura.effects?.[0];
   console.debug('[Aura Helper] aura effect', effect);
@@ -63,39 +129,45 @@ Hooks.on('pf2e.startTurn', async (combatant) => {
   console.debug('[Aura Helper] pf2e.startTurn', { combatant });
   const token = combatant.token?.object ?? combatant.token;
   const partyMembers = game.actors.party?.members ?? [];
-  if (!partyMembers.some((member) => member.id === token.actor.id)) return;
-
-  const enemies = canvas.tokens.placeables.filter(
-    (t) =>
-      t.actor &&
-      t.actor.isEnemyOf(combatant.actor) &&
-      (t.isVisible ?? !t.document.hidden)
+  const isPartyMember = partyMembers.some(
+    (member) => member.id === token.actor.id
   );
-  console.debug('[Aura Helper] enemies in scene', enemies.map((e) => e.name));
 
-  for (const enemy of enemies) {
-    const auras = enemy.actor?.auras ? [...enemy.actor.auras.values()] : [];
-    console.debug('[Aura Helper] checking enemy auras', {
-      enemy: enemy.name,
-      auras: auras.map((a) => a.slug),
-    });
-    for (const aura of auras) {
-      const distance = canvas.grid.measureDistance(token, enemy);
-      console.debug('[Aura Helper] evaluating aura', {
-        aura: aura.slug,
-        distance,
-        radius: aura.radius,
+  if (isPartyMember) {
+    const enemies = canvas.tokens.placeables.filter(
+      (t) =>
+        t.actor &&
+        t.actor.isEnemyOf(combatant.actor) &&
+        (t.isVisible ?? !t.document.hidden)
+    );
+    console.debug('[Aura Helper] enemies in scene', enemies.map((e) => e.name));
+
+    for (const enemy of enemies) {
+      const auras = enemy.actor?.auras ? [...enemy.actor.auras.values()] : [];
+      console.debug('[Aura Helper] checking enemy auras', {
+        enemy: enemy.name,
+        auras: auras.map((a) => a.slug),
       });
-      if (distance > aura.radius) continue;
-      await handleAura({
-        token,
-        enemy,
-        aura,
-        message: (auraLink) =>
-          `${token.name} beginnt seinen Zug innerhalb der Aura ${auraLink} von ${enemy.name}.`,
-      });
+      for (const aura of auras) {
+        const distance = canvas.grid.measureDistance(token, enemy);
+        console.debug('[Aura Helper] evaluating aura', {
+          aura: aura.slug,
+          distance,
+          radius: aura.radius,
+        });
+        if (distance > aura.radius) continue;
+        await handleAura({
+          token,
+          enemy,
+          aura,
+          message: (auraLink) =>
+            `${token.name} beginnt seinen Zug innerhalb der Aura ${auraLink} von ${enemy.name}.`,
+        });
+      }
     }
   }
+
+  await refreshPlayerAuras();
 });
 
 Hooks.on('updateToken', async (tokenDoc, change, _options, userId) => {
@@ -103,52 +175,60 @@ Hooks.on('updateToken', async (tokenDoc, change, _options, userId) => {
   const token = tokenDoc.object;
   if (!token) return;
   const partyMembers = game.actors.party?.members ?? [];
-  if (!partyMembers.some((member) => member.id === token.actor?.id)) return;
-
-  const enemies = canvas.tokens.placeables.filter(
-    (t) =>
-      t.actor &&
-      t.actor.isEnemyOf(token.actor) &&
-      (t.isVisible ?? !t.document.hidden)
+  const isPartyMember = partyMembers.some(
+    (member) => member.id === token.actor?.id
   );
 
-  if (token._movement) {
-    if (!movementStarts.has(token.id)) {
-      const startPoint =
-        token._movement?.rays?.[0]?.A ??
-        token._movement?.ray?.A ?? {
-          x: token.center.x,
-          y: token.center.y,
-        };
-      const startMap = new Map();
-      for (const enemy of enemies) {
-        const auras = enemy.actor?.auras ? [...enemy.actor.auras.values()] : [];
-        for (const aura of auras) {
-          const distance = canvas.grid.measureDistance(startPoint, enemy.center);
-          startMap.set(`${enemy.id}-${aura.slug}`, distance <= aura.radius);
+  if (isPartyMember) {
+    const enemies = canvas.tokens.placeables.filter(
+      (t) =>
+        t.actor &&
+        t.actor.isEnemyOf(token.actor) &&
+        (t.isVisible ?? !t.document.hidden)
+    );
+
+    if (token._movement) {
+      if (!movementStarts.has(token.id)) {
+        const startPoint =
+          token._movement?.rays?.[0]?.A ??
+          token._movement?.ray?.A ?? {
+            x: token.center.x,
+            y: token.center.y,
+          };
+        const startMap = new Map();
+        for (const enemy of enemies) {
+          const auras = enemy.actor?.auras ? [...enemy.actor.auras.values()] : [];
+          for (const aura of auras) {
+            const distance = canvas.grid.measureDistance(startPoint, enemy.center);
+            startMap.set(`${enemy.id}-${aura.slug}`, distance <= aura.radius);
+          }
         }
+        movementStarts.set(token.id, startMap);
       }
-      movementStarts.set(token.id, startMap);
+      return;
     }
+
+    const startMap = movementStarts.get(token.id) ?? new Map();
+    movementStarts.delete(token.id);
+    for (const enemy of enemies) {
+      const auras = enemy.actor?.auras ? [...enemy.actor.auras.values()] : [];
+      for (const aura of auras) {
+        const key = `${enemy.id}-${aura.slug}`;
+        const wasInside = startMap.get(key) ?? false;
+        const newDistance = canvas.grid.measureDistance(token.center, enemy.center);
+        if (newDistance > aura.radius || wasInside) continue;
+        await handleAura({
+          token,
+          enemy,
+          aura,
+          message: (auraLink) =>
+            `${token.name} betritt die Aura ${auraLink} von ${enemy.name}.`,
+        });
+      }
+    }
+  } else if (token._movement) {
     return;
   }
 
-  const startMap = movementStarts.get(token.id) ?? new Map();
-  movementStarts.delete(token.id);
-  for (const enemy of enemies) {
-    const auras = enemy.actor?.auras ? [...enemy.actor.auras.values()] : [];
-    for (const aura of auras) {
-      const key = `${enemy.id}-${aura.slug}`;
-      const wasInside = startMap.get(key) ?? false;
-      const newDistance = canvas.grid.measureDistance(token.center, enemy.center);
-      if (newDistance > aura.radius || wasInside) continue;
-      await handleAura({
-        token,
-        enemy,
-        aura,
-        message: (auraLink) =>
-          `${token.name} betritt die Aura ${auraLink} von ${enemy.name}.`,
-      });
-    }
-  }
+  await refreshPlayerAuras();
 });
