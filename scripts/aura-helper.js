@@ -8,7 +8,10 @@ async function refreshPlayerAuras() {
   const tokens = canvas.tokens.placeables.filter(
     (t) => t.actor && (t.isVisible ?? !t.document.hidden)
   );
-  const players = tokens.filter((t) => t.actor?.hasPlayerOwner);
+  const partyMembers = game.actors.party?.members ?? [];
+  const players = tokens.filter((t) =>
+    partyMembers.some((member) => member.id === t.actor.id)
+  );
 
   const active = new Map();
   for (const player of players) {
@@ -125,9 +128,12 @@ async function handleAura({ token, enemy, aura, message }) {
 Hooks.on('pf2e.startTurn', async (combatant) => {
   console.debug('[Aura Helper] pf2e.startTurn', { combatant });
   const token = combatant.token?.object ?? combatant.token;
-  const isPlayerOwned = token.actor?.hasPlayerOwner ?? false;
+  const partyMembers = game.actors.party?.members ?? [];
+  const isPartyMember = partyMembers.some(
+    (member) => member.id === token.actor.id
+  );
 
-  if (isPlayerOwned) {
+  if (isPartyMember) {
     const enemies = canvas.tokens.placeables.filter(
       (t) =>
         t.actor &&
@@ -168,9 +174,12 @@ Hooks.on('updateToken', async (tokenDoc, change, _options, userId) => {
   if (change.x === undefined && change.y === undefined) return;
   const token = tokenDoc.object;
   if (!token) return;
-  const isPlayerOwned = token.actor?.hasPlayerOwner ?? false;
+  const partyMembers = game.actors.party?.members ?? [];
+  const isPartyMember = partyMembers.some(
+    (member) => member.id === token.actor?.id
+  );
 
-  if (isPlayerOwned) {
+  if (isPartyMember) {
     const enemies = canvas.tokens.placeables.filter(
       (t) =>
         t.actor &&
