@@ -1,4 +1,5 @@
 const movementStarts = new Map();
+const currentAuraOccupancy = new Map();
 
 const AURA_FLAG = 'pf2e-aura-helper';
 const AURA_SOURCE_FLAG = 'kinetic-source';
@@ -207,6 +208,7 @@ Hooks.on('updateToken', async (tokenDoc, change, _options, userId) => {
 
     if (token._movement) {
       if (!movementStarts.has(token.id)) {
+        const processedKeys = new Set();
         const startPoint =
           token._movement?.rays?.[0]?.A ??
           token._movement?.ray?.A ?? {
@@ -214,12 +216,29 @@ Hooks.on('updateToken', async (tokenDoc, change, _options, userId) => {
             y: token.center.y,
           };
         const startMap = new Map();
+        const occupancyMap = currentAuraOccupancy.get(token.id) ?? new Map();
         for (const enemy of enemies) {
           const auras = enemy.actor?.auras ? [...enemy.actor.auras.values()] : [];
           for (const aura of auras) {
+            const key = `${enemy.id}-${aura.slug}`;
             const distance = canvas.grid.measureDistance(startPoint, enemy.center);
-            startMap.set(`${enemy.id}-${aura.slug}`, distance <= aura.radius);
+            const isInside = distance <= aura.radius;
+            startMap.set(key, isInside);
+            if (isInside) {
+              occupancyMap.set(key, true);
+            } else {
+              occupancyMap.delete(key);
+            }
+            processedKeys.add(key);
           }
+        }
+        for (const key of [...occupancyMap.keys()]) {
+          if (!processedKeys.has(key)) occupancyMap.delete(key);
+        }
+        if (occupancyMap.size > 0) {
+          currentAuraOccupancy.set(token.id, occupancyMap);
+        } else {
+          currentAuraOccupancy.delete(token.id);
         }
         movementStarts.set(token.id, startMap);
       }
@@ -231,25 +250,56 @@ Hooks.on('updateToken', async (tokenDoc, change, _options, userId) => {
 
     const startMap = movementStarts.get(token.id) ?? new Map();
     movementStarts.delete(token.id);
+    const occupancyMap = currentAuraOccupancy.get(token.id) ?? new Map();
+    const processedKeys = new Set();
     for (const enemy of enemies) {
       const auras = enemy.actor?.auras ? [...enemy.actor.auras.values()] : [];
       for (const aura of auras) {
         const key = `${enemy.id}-${aura.slug}`;
-        const wasInside = startMap.get(key) ?? false;
+        processedKeys.add(key);
+        const previousInside =
+          (startMap.has(key) ? startMap.get(key) : occupancyMap.get(key)) ?? false;
         const newDistance = canvas.grid.measureDistance(token.center, enemy.center);
-        if (newDistance > aura.radius || wasInside) continue;
-        await handleAura({
-          token,
-          enemy,
-          aura,
-          message: (auraLink) =>
-            `${token.name} betritt die Aura ${auraLink} von ${enemy.name}.`,
-        });
+        const isInside = newDistance <= aura.radius;
+        if (isInside) {
+          if (!previousInside) {
+            await handleAura({
+              token,
+              enemy,
+              aura,
+              message: (auraLink) =>
+                `${token.name} betritt die Aura ${auraLink} von ${enemy.name}.`,
+            });
+          }
+          occupancyMap.set(key, true);
+        } else if (occupancyMap.get(key)) {
+          occupancyMap.delete(key);
+        }
       }
+    }
+    for (const key of [...occupancyMap.keys()]) {
+      if (!processedKeys.has(key)) {
+        occupancyMap.delete(key);
+      }
+    }
+    if (occupancyMap.size > 0) {
+      currentAuraOccupancy.set(token.id, occupancyMap);
+    } else {
+      currentAuraOccupancy.delete(token.id);
     }
   }
 
   if (hasKineticSleetAura()) {
     await refreshPlayerAuras();
   }
+});
+
+Hooks.on('deleteToken', (tokenDoc) => {
+  movementStarts.delete(tokenDoc.id);
+  currentAuraOccupancy.delete(tokenDoc.id);
+});
+
+Hooks.on('canvasReady', () => {
+  movementStarts.clear();
+  currentAuraOccupancy.clear();
 });
