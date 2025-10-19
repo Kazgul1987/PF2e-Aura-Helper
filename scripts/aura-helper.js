@@ -189,6 +189,7 @@ Hooks.on('pf2e.startTurn', async (combatant) => {
 
 Hooks.on('updateToken', async (tokenDoc, change, _options, userId) => {
   if (change.x === undefined && change.y === undefined) return;
+  if (userId !== game.user.id) return;
   const token = tokenDoc.object;
   if (!token) return;
   const partyMembers = game.actors.party?.members ?? [];
