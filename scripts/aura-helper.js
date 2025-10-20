@@ -150,12 +150,17 @@ Hooks.on('pf2e.startTurn', async (combatant) => {
   );
 
   if (isPartyMember) {
-    const enemies = canvas.tokens.placeables.filter(
-      (t) =>
-        t.actor &&
+    const enemies = canvas.tokens.placeables.filter((t) => {
+      const isHidden = t.document?.hidden ?? false;
+      const isDefeated =
+        t.combatant?.isDefeated ?? t.combatant?.defeated ?? false;
+      return (
+        !!t.actor &&
         t.actor.isEnemyOf(combatant.actor) &&
-        (t.isVisible ?? !t.document.hidden)
-    );
+        !isHidden &&
+        !isDefeated
+      );
+    });
     console.debug('[Aura Helper] enemies in scene', enemies.map((e) => e.name));
 
     for (const enemy of enemies) {
@@ -199,12 +204,17 @@ Hooks.on('updateToken', async (tokenDoc, change, _options, userId) => {
   );
 
   if (isPartyMember) {
-    const enemies = canvas.tokens.placeables.filter(
-      (t) =>
-        t.actor &&
+    const enemies = canvas.tokens.placeables.filter((t) => {
+      const isHidden = t.document?.hidden ?? false;
+      const isDefeated =
+        t.combatant?.isDefeated ?? t.combatant?.defeated ?? false;
+      return (
+        !!t.actor &&
         t.actor.isEnemyOf(token.actor) &&
-        (t.isVisible ?? !t.document.hidden)
-    );
+        !isHidden &&
+        !isDefeated
+      );
+    });
 
     if (token._movement) {
       if (!movementStarts.has(token.id)) {
