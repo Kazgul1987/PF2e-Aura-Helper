@@ -4,6 +4,27 @@ const currentAuraOccupancy = new Map();
 const AURA_FLAG = 'pf2e-aura-helper';
 const AURA_SOURCE_FLAG = 'kinetic-source';
 
+function getPartyTokens() {
+  const partyMembers = game.actors.party?.members ?? [];
+  if (partyMembers.length === 0) return [];
+  return canvas.tokens.placeables.filter((token) => {
+    if (!token.actor) return false;
+    if (!(token.isVisible ?? !token.document.hidden)) return false;
+    return partyMembers.some((member) => member.id === token.actor.id);
+  });
+}
+
+function isVisibleToParty(enemyToken) {
+  if (!enemyToken) return false;
+  const partyTokens = getPartyTokens();
+  if (partyTokens.length === 0) return false;
+  const visibility = canvas.effects?.visibility;
+  if (!visibility) return false;
+  return partyTokens.some((playerToken) =>
+    visibility.testVisibility(enemyToken.center, { object: playerToken })
+  );
+}
+
 function hasKineticSleetAura() {
   return canvas.tokens.placeables.some(
     (t) =>
@@ -158,7 +179,8 @@ Hooks.on('pf2e.startTurn', async (combatant) => {
         !!t.actor &&
         t.actor.isEnemyOf(combatant.actor) &&
         !isHidden &&
-        !isDefeated
+        !isDefeated &&
+        isVisibleToParty(t)
       );
     });
     console.debug('[Aura Helper] enemies in scene', enemies.map((e) => e.name));
@@ -204,7 +226,7 @@ Hooks.on('updateToken', async (tokenDoc, change, _options, userId) => {
   );
 
   if (isPartyMember) {
-    const enemies = canvas.tokens.placeables.filter((t) => {
+    const potentialEnemies = canvas.tokens.placeables.filter((t) => {
       const isHidden = t.document?.hidden ?? false;
       const isDefeated =
         t.combatant?.isDefeated ?? t.combatant?.defeated ?? false;
@@ -216,6 +238,39 @@ Hooks.on('updateToken', async (tokenDoc, change, _options, userId) => {
       );
     });
 
+    const visibleEnemies = [];
+    const invisibleEnemies = [];
+    for (const enemy of potentialEnemies) {
+      if (isVisibleToParty(enemy)) {
+        visibleEnemies.push(enemy);
+      } else {
+        invisibleEnemies.push(enemy);
+      }
+    }
+
+    let occupancyMap = currentAuraOccupancy.get(token.id) ?? new Map();
+    if (invisibleEnemies.length > 0) {
+      const startMap = movementStarts.get(token.id);
+      for (const enemy of invisibleEnemies) {
+        const auras = enemy.actor?.auras ? [...enemy.actor.auras.values()] : [];
+        for (const aura of auras) {
+          const key = `${enemy.id}-${aura.slug}`;
+          occupancyMap.delete(key);
+          startMap?.delete(key);
+        }
+      }
+      if (startMap && startMap.size === 0) {
+        movementStarts.delete(token.id);
+      }
+      if (occupancyMap.size === 0) {
+        currentAuraOccupancy.delete(token.id);
+      } else {
+        currentAuraOccupancy.set(token.id, occupancyMap);
+      }
+    }
+
+    const enemies = visibleEnemies;
+
     if (token._movement) {
       if (!movementStarts.has(token.id)) {
         const processedKeys = new Set();
@@ -226,7 +281,7 @@ Hooks.on('updateToken', async (tokenDoc, change, _options, userId) => {
             y: token.center.y,
           };
         const startMap = new Map();
-        const occupancyMap = currentAuraOccupancy.get(token.id) ?? new Map();
+        occupancyMap = currentAuraOccupancy.get(token.id) ?? new Map();
         for (const enemy of enemies) {
           const auras = enemy.actor?.auras ? [...enemy.actor.auras.values()] : [];
           for (const aura of auras) {
@@ -260,7 +315,7 @@ Hooks.on('updateToken', async (tokenDoc, change, _options, userId) => {
 
     const startMap = movementStarts.get(token.id) ?? new Map();
     movementStarts.delete(token.id);
-    const occupancyMap = currentAuraOccupancy.get(token.id) ?? new Map();
+    occupancyMap = currentAuraOccupancy.get(token.id) ?? new Map();
     const processedKeys = new Set();
     for (const enemy of enemies) {
       const auras = enemy.actor?.auras ? [...enemy.actor.auras.values()] : [];
