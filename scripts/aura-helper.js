@@ -3,10 +3,7 @@ const currentAuraOccupancy = new Map();
 const recentAuraEvents = new Map();
 
 const MODULE_ID = 'pf2e-aura-helper';
-const AURA_FLAG = 'pf2e-aura-helper';
-const AURA_SOURCE_FLAG = 'kinetic-source';
 const AURA_EVENT_TYPE = 'AURA_EVENT';
-const WINTER_SLEET_REFRESH_EVENT_TYPE = 'WINTER_SLEET_REFRESH';
 const AURA_EVENT_KINDS = {
   START_TURN: 'START_TURN',
   ENTER: 'ENTER',
@@ -33,11 +30,6 @@ Hooks.once('ready', () => {
   game.socket.on(`module.${MODULE_ID}`, async (payload) => {
     if (!game.user.isGM) return;
     if (!payload) return;
-
-    if (payload.type === WINTER_SLEET_REFRESH_EVENT_TYPE) {
-      await refreshPlayerAuras();
-      return;
-    }
 
     if (payload.type !== AURA_EVENT_TYPE) return;
     if (
@@ -88,6 +80,10 @@ function isVisibleToParty(enemyToken) {
   );
 }
 
+function gmIds() {
+  return game.users.filter((u) => u.isGM).map((u) => u.id);
+}
+
 function isResponsibleOwnerClient(token) {
   if (!token?.actor || game.user.isGM) return false;
   if (!token.actor.testUserPermission(game.user, 'OWNER')) return false;
@@ -102,96 +98,6 @@ function isResponsibleOwnerClient(token) {
   if (ownerUsers.length === 0) return true;
   ownerUsers.sort((a, b) => a.id.localeCompare(b.id));
   return ownerUsers[0].id === game.user.id;
-}
-
-function hasKineticSleetAura() {
-  return canvas.tokens.placeables.some(
-    (t) =>
-      t.actor &&
-      t.actor.itemTypes.effect.some((e) => e.slug === 'effect-kinetic-aura') &&
-      t.actor.itemTypes.effect.some((e) => e.slug === 'stance-winter-sleet')
-  );
-}
-
-function gmIds() {
-  return game.users.filter((u) => u.isGM).map((u) => u.id);
-}
-
-async function refreshPlayerAuras() {
-  if (!game.user.isGM) return;
-
-  const tokens = canvas.tokens.placeables.filter(
-    (t) => t.actor && (t.isVisible ?? !t.document.hidden)
-  );
-  const partyMembers = game.actors.party?.members ?? [];
-  const players = tokens.filter((t) =>
-    partyMembers.some((member) => member.id === t.actor.id)
-  );
-
-  const active = new Map();
-  for (const player of players) {
-    const hasAura = player.actor.itemTypes.effect.some(
-      (e) => e.slug === 'effect-kinetic-aura'
-    );
-    const hasSleet = player.actor.itemTypes.effect.some(
-      (e) => e.slug === 'stance-winter-sleet'
-    );
-    if (hasAura && hasSleet) {
-      const aura = player.actor.auras?.get('kinetic-aura');
-      if (aura)
-        active.set(player.id, {
-          token: player,
-          slug: 'kinetic-aura',
-          radius: aura.radius,
-        });
-    }
-  }
-
-  for (const token of tokens) {
-    const conditions =
-      token.actor?.items.filter(
-        (i) =>
-          i.slug === 'off-guard' &&
-          i.getFlag(AURA_FLAG, AURA_SOURCE_FLAG) !== undefined
-      ) ?? [];
-    for (const condition of conditions) {
-      const sourceId = condition.getFlag(AURA_FLAG, AURA_SOURCE_FLAG);
-      const source = active.get(sourceId);
-      const inRange =
-        source &&
-        canvas.grid.measureDistance(source.token, token) <= source.radius;
-      if (!inRange) {
-        await condition.delete();
-      }
-    }
-  }
-
-  for (const [sourceId, data] of active) {
-    for (const token of tokens) {
-      if (!data.token.actor.isEnemyOf(token.actor)) continue;
-      const distance = canvas.grid.measureDistance(data.token, token);
-      if (distance > data.radius) continue;
-      const existing =
-        token.actor.items.find(
-          (i) =>
-            i.slug === 'off-guard' &&
-            i.getFlag(AURA_FLAG, AURA_SOURCE_FLAG) === sourceId
-        ) ?? null;
-      if (existing) continue;
-      const offGuard = game.pf2e.ConditionManager.getCondition('off-guard');
-      if (!offGuard) continue;
-      const condition = offGuard.toObject();
-      condition.flags ??= {};
-      condition.flags[AURA_FLAG] = { [AURA_SOURCE_FLAG]: sourceId };
-      await token.actor.createEmbeddedDocuments('Item', [condition]);
-    }
-  }
-}
-
-function emitWinterSleetRefresh() {
-  game.socket.emit(`module.${MODULE_ID}`, {
-    type: WINTER_SLEET_REFRESH_EVENT_TYPE,
-  });
 }
 
 async function handleAura({ token, enemy, aura, message, whisperToGm = false }) {
@@ -302,7 +208,6 @@ Hooks.on('pf2e.startTurn', async (combatant) => {
     }
   }
 
-  if (hasKineticSleetAura()) emitWinterSleetRefresh();
 });
 
 Hooks.on('updateToken', async (tokenDoc, change, _options, _userId) => {
@@ -398,7 +303,6 @@ Hooks.on('updateToken', async (tokenDoc, change, _options, _userId) => {
         }
         movementStarts.set(token.id, startMap);
       }
-      if (hasKineticSleetAura()) emitWinterSleetRefresh();
       return;
     }
 
@@ -445,7 +349,6 @@ Hooks.on('updateToken', async (tokenDoc, change, _options, _userId) => {
     }
   }
 
-  if (hasKineticSleetAura()) emitWinterSleetRefresh();
 });
 
 Hooks.on('deleteToken', (tokenDoc) => {
