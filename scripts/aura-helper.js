@@ -321,7 +321,17 @@ async function handleAura({ token, enemy, aura, message, whisperToGm = false }) 
 Hooks.on('pf2e.startTurn', async (combatant) => {
   logDebug('pf2e.startTurn', { combatant });
   const token = combatant.token?.object ?? combatant.token;
-  if (!isEmitterForTokenChange(token)) return;
+  const isEmitter = isEmitterForTokenChange(token);
+  logDebug('emitter check', {
+    hookType: 'startTurn',
+    userId: game.user.id,
+    userName: game.user.name,
+    isGm: game.user.isGM,
+    tokenId: token?.id ?? null,
+    tokenName: token?.name ?? null,
+    isEmitterForTokenChange: isEmitter,
+  });
+  if (!isEmitter) return;
   const auraChecks = getStandardAuraChecks(token);
   logDebug(
     'standard aura sources in scene',
@@ -368,7 +378,18 @@ Hooks.on('updateToken', async (tokenDoc, change, _options, userId) => {
   if (change.x === undefined && change.y === undefined) return;
   const token = tokenDoc.object;
   if (!token) return;
-  if (!isEmitterForTokenChange(token, userId)) return;
+  const isEmitter = isEmitterForTokenChange(token, userId);
+  logDebug('emitter check', {
+    hookType: 'updateToken',
+    userId: game.user.id,
+    userName: game.user.name,
+    isGm: game.user.isGM,
+    hookUserId: userId ?? null,
+    tokenId: token?.id ?? null,
+    tokenName: token?.name ?? null,
+    isEmitterForTokenChange: isEmitter,
+  });
+  if (!isEmitter) return;
   const auraChecks = getStandardAuraChecks(token);
   let occupancyMap = currentAuraOccupancy.get(token.id) ?? new Map();
 
