@@ -7,8 +7,13 @@ const AURA_EVENT_TYPE = 'AURA_EVENT';
 const AURA_EVENT_KINDS = {
   START_TURN: 'START_TURN',
   ENTER: 'ENTER',
+  WINTER_SLEET: 'WINTER_SLEET',
 };
 const AURA_EVENT_TTL_MS = 5000;
+const WINTER_SLEET_AURA_SLUG = 'kinetic-aura';
+const WINTER_SLEET_EFFECT_SLUG = 'effect-kinetic-aura';
+const WINTER_SLEET_STANCE_SLUG = 'stance-winter-sleet';
+const WINTER_SLEET_TRIGGER_ON_MOVE_WITHIN = true;
 
 function getAuraEventKey({ eventKind, tokenId, enemyId, auraSlug, round, turn }) {
   return `${eventKind}:${tokenId}:${enemyId}:${auraSlug}:${round}:${turn}`;
@@ -34,11 +39,19 @@ Hooks.once('ready', () => {
     if (payload.type !== AURA_EVENT_TYPE) return;
     if (
       payload.eventKind !== AURA_EVENT_KINDS.START_TURN &&
-      payload.eventKind !== AURA_EVENT_KINDS.ENTER
+      payload.eventKind !== AURA_EVENT_KINDS.ENTER &&
+      payload.eventKind !== AURA_EVENT_KINDS.WINTER_SLEET
     ) {
       return;
     }
     if (isDuplicateAuraEvent(payload)) return;
+
+    if (payload.eventKind === AURA_EVENT_KINDS.WINTER_SLEET) {
+      const token = canvas.tokens.get(payload.tokenId);
+      const source = canvas.tokens.get(payload.enemyId);
+      await createWinterSleetChatMessage({ token, source, whisperToGm: true });
+      return;
+    }
 
     const token = canvas.tokens.get(payload.tokenId);
     const enemy = canvas.tokens.get(payload.enemyId);
@@ -58,6 +71,44 @@ Hooks.once('ready', () => {
     });
   });
 });
+
+
+function getClassDcFromActor(actor) {
+  const classDC = Number(actor?.system?.attributes?.classDC?.value);
+  if (!Number.isFinite(classDC)) return null;
+  return classDC - 2;
+}
+
+async function createWinterSleetChatMessage({ token, source, whisperToGm = false }) {
+  if (!token?.actor || !source?.actor) return;
+  const stance = source.actor.items.find((item) => item.slug === WINTER_SLEET_STANCE_SLUG);
+  const sourceName = stance?.name ?? 'Winter Sleet';
+  const sourceLink = stance?.uuid ? `@UUID[${stance.uuid}]{${sourceName}}` : sourceName;
+  const dc = getClassDcFromActor(source.actor);
+  const check = dc !== null ? `@Check[acrobatics|dc:${dc}]` : '@Check[acrobatics]';
+  const content = `${token.name} bewegt sich in der Aura ${sourceLink} von ${source.name}: ${check}`;
+  const speaker = ChatMessage.getSpeaker({ token: token.document, actor: token.actor });
+  await ChatMessage.create({
+    content,
+    speaker,
+    whisper: whisperToGm ? gmIds() : undefined,
+  });
+}
+
+function getWinterSleetSources() {
+  const partyMembers = game.actors.party?.members ?? [];
+  if (partyMembers.length === 0) return [];
+
+  return canvas.tokens.placeables.filter((token) => {
+    if (!token.actor) return false;
+    const isPartyMember = partyMembers.some((member) => member.id === token.actor.id);
+    if (!isPartyMember) return false;
+    const effects = token.actor.itemTypes?.effect ?? [];
+    const hasKineticAura = effects.some((effect) => effect.slug === WINTER_SLEET_EFFECT_SLUG);
+    const hasWinterSleet = effects.some((effect) => effect.slug === WINTER_SLEET_STANCE_SLUG);
+    return hasKineticAura && hasWinterSleet && !!token.actor.auras?.get(WINTER_SLEET_AURA_SLUG);
+  });
+}
 
 function getPartyTokens() {
   const partyMembers = game.actors.party?.members ?? [];
@@ -348,6 +399,85 @@ Hooks.on('updateToken', async (tokenDoc, change, _options, _userId) => {
       currentAuraOccupancy.delete(token.id);
     }
   }
+
+  const winterSleetSources = getWinterSleetSources();
+  if (winterSleetSources.length === 0) return;
+
+  if (token._movement) {
+    let startMap = movementStarts.get(token.id);
+    if (!startMap) {
+      startMap = new Map();
+      movementStarts.set(token.id, startMap);
+    }
+    const startPoint = token._movement?.rays?.[0]?.A ?? token._movement?.ray?.A ?? token.center;
+    const wsOccupancyMap = currentAuraOccupancy.get(token.id) ?? new Map();
+
+    for (const source of winterSleetSources) {
+      if (!source.actor?.isEnemyOf(token.actor)) continue;
+      const aura = source.actor.auras?.get(WINTER_SLEET_AURA_SLUG);
+      if (!aura) continue;
+      const key = `${source.id}-winter-sleet`;
+      const startDistance = canvas.grid.measureDistance(startPoint, source.center);
+      const startedInside = startDistance <= aura.radius;
+      startMap.set(key, startedInside);
+      if (startedInside) {
+        wsOccupancyMap.set(key, true);
+      } else {
+        wsOccupancyMap.delete(key);
+      }
+    }
+
+    if (wsOccupancyMap.size > 0) {
+      currentAuraOccupancy.set(token.id, wsOccupancyMap);
+    } else {
+      currentAuraOccupancy.delete(token.id);
+    }
+    return;
+  }
+
+  const startMap = movementStarts.get(token.id) ?? new Map();
+  movementStarts.delete(token.id);
+  const wsOccupancyMap = currentAuraOccupancy.get(token.id) ?? new Map();
+
+  for (const source of winterSleetSources) {
+    if (!source.actor?.isEnemyOf(token.actor)) continue;
+    const aura = source.actor.auras?.get(WINTER_SLEET_AURA_SLUG);
+    if (!aura) continue;
+
+    const key = `${source.id}-winter-sleet`;
+    const previousInside =
+      (startMap.has(key) ? startMap.get(key) : wsOccupancyMap.get(key)) ?? false;
+    const distance = canvas.grid.measureDistance(token.center, source.center);
+    const isInside = distance <= aura.radius;
+    const shouldTrigger =
+      (!previousInside && isInside) ||
+      (WINTER_SLEET_TRIGGER_ON_MOVE_WITHIN && previousInside && isInside);
+
+    if (shouldTrigger) {
+      game.socket.emit(`module.${MODULE_ID}`, {
+        type: AURA_EVENT_TYPE,
+        eventKind: AURA_EVENT_KINDS.WINTER_SLEET,
+        tokenId: token.id,
+        enemyId: source.id,
+        auraSlug: WINTER_SLEET_AURA_SLUG,
+        round: game.combat?.round ?? 0,
+        turn: game.combat?.turn ?? 0,
+      });
+    }
+
+    if (isInside) {
+      wsOccupancyMap.set(key, true);
+    } else {
+      wsOccupancyMap.delete(key);
+    }
+  }
+
+  if (wsOccupancyMap.size > 0) {
+    currentAuraOccupancy.set(token.id, wsOccupancyMap);
+  } else {
+    currentAuraOccupancy.delete(token.id);
+  }
+
 
 });
 
