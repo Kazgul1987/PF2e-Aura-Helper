@@ -1,6 +1,7 @@
 const movementStarts = new Map();
 const currentAuraOccupancy = new Map();
 const recentAuraEvents = new Map();
+const recentEmitterAuraEvents = new Map();
 
 const MODULE_ID = 'pf2e-aura-helper';
 const AURA_EVENT_TYPE = 'AURA_EVENT';
@@ -40,8 +41,8 @@ function logInfo(...args) {
   console.info('[Aura Helper]', ...args);
 }
 
-function getAuraEventKey({ eventKind, tokenId, enemyId, auraSlug, round, turn }) {
-  return `${eventKind}:${tokenId}:${enemyId}:${auraSlug}:${round}:${turn}`;
+function getAuraEventKey({ combatId, eventKind, tokenId, enemyId, auraSlug, round, turn }) {
+  return `${combatId ?? 'none'}:${eventKind}:${tokenId}:${enemyId}:${auraSlug}:${round}:${turn}`;
 }
 
 function isDuplicateAuraEvent(payload) {
@@ -54,6 +55,45 @@ function isDuplicateAuraEvent(payload) {
   if (cached && cached > now) return true;
   recentAuraEvents.set(key, now + AURA_EVENT_TTL_MS);
   return false;
+}
+
+function isDuplicateEmitterAuraEvent(payload) {
+  const key = getAuraEventKey(payload);
+  const now = Date.now();
+  for (const [cachedKey, expiresAt] of recentEmitterAuraEvents) {
+    if (expiresAt <= now) recentEmitterAuraEvents.delete(cachedKey);
+  }
+  const cached = recentEmitterAuraEvents.get(key);
+  if (cached && cached > now) return true;
+  recentEmitterAuraEvents.set(key, now + AURA_EVENT_TTL_MS);
+  return false;
+}
+
+function emitAuraEvent(payload) {
+  if (isDuplicateEmitterAuraEvent(payload)) {
+    logDebug('skip duplicate emit (local)', {
+      eventKind: payload.eventKind,
+      tokenId: payload.tokenId,
+      enemyId: payload.enemyId,
+      auraSlug: payload.auraSlug,
+      combatId: payload.combatId,
+      round: payload.round,
+      turn: payload.turn,
+    });
+    return;
+  }
+
+  logDebug('emit aura event', {
+    eventKind: payload.eventKind,
+    tokenId: payload.tokenId,
+    enemyId: payload.enemyId,
+    auraSlug: payload.auraSlug,
+    combatId: payload.combatId,
+    round: payload.round,
+    turn: payload.turn,
+  });
+
+  game.socket.emit(`module.${MODULE_ID}`, payload);
 }
 
 Hooks.once('ready', () => {
@@ -257,9 +297,17 @@ function isResponsibleOwnerClient(token) {
 
 function isEmitterForTokenChange(token, userId) {
   if (!token?.actor) return false;
-  if (userId && userId === game.user.id) return true;
-  if (!userId) return isResponsibleOwnerClient(token);
-  return token.actor.testUserPermission(game.user, 'OWNER');
+
+  if (userId !== undefined && userId !== null) {
+    return userId === game.user.id;
+  }
+
+  if (token.actor.hasPlayerOwner) {
+    if (!game.user.active) return false;
+    return token.actor.testUserPermission(game.user, 'OWNER');
+  }
+
+  return game.user.isGM;
 }
 
 async function handleAura({ token, enemy, aura, message, whisperToGm = false }) {
@@ -319,8 +367,13 @@ async function handleAura({ token, enemy, aura, message, whisperToGm = false }) 
 }
 
 Hooks.on('pf2e.startTurn', async (combatant) => {
-  logDebug('pf2e.startTurn', { combatant });
   const token = combatant.token?.object ?? combatant.token;
+  logDebug('hook entry', {
+    hookType: 'pf2e.startTurn',
+    tokenName: token?.name ?? null,
+    userId: null,
+    isGM: game.user.isGM,
+  });
   const isEmitter = isEmitterForTokenChange(token);
   logDebug('emitter check', {
     hookType: 'startTurn',
@@ -331,7 +384,15 @@ Hooks.on('pf2e.startTurn', async (combatant) => {
     tokenName: token?.name ?? null,
     isEmitterForTokenChange: isEmitter,
   });
-  if (!isEmitter) return;
+  if (!isEmitter) {
+    logDebug('skip emit: emitter selection denied', {
+      hookType: 'pf2e.startTurn',
+      reason: 'Current client is not selected emitter',
+      tokenId: token?.id ?? null,
+      tokenName: token?.name ?? null,
+    });
+    return;
+  }
   const auraChecks = getStandardAuraChecks(token);
   logDebug(
     'standard aura sources in scene',
@@ -360,12 +421,13 @@ Hooks.on('pf2e.startTurn', async (combatant) => {
       round,
       turn,
     });
-    game.socket.emit(`module.${MODULE_ID}`, {
+    emitAuraEvent({
       type: AURA_EVENT_TYPE,
       eventKind: AURA_EVENT_KINDS.START_TURN,
       tokenId: token.id,
       enemyId: source.id,
       auraSlug: aura.slug,
+      combatId: game.combat?.id ?? null,
       round,
       turn,
     });
@@ -374,9 +436,14 @@ Hooks.on('pf2e.startTurn', async (combatant) => {
 });
 
 Hooks.on('updateToken', async (tokenDoc, change, _options, userId) => {
-  logInfo('updateToken received', { tokenId: tokenDoc.id, change });
-  if (change.x === undefined && change.y === undefined) return;
   const token = tokenDoc.object;
+  logDebug('hook entry', {
+    hookType: 'updateToken',
+    tokenName: token?.name ?? null,
+    userId: userId ?? null,
+    isGM: game.user.isGM,
+  });
+  if (change.x === undefined && change.y === undefined) return;
   if (!token) return;
   const isEmitter = isEmitterForTokenChange(token, userId);
   logDebug('emitter check', {
@@ -389,7 +456,16 @@ Hooks.on('updateToken', async (tokenDoc, change, _options, userId) => {
     tokenName: token?.name ?? null,
     isEmitterForTokenChange: isEmitter,
   });
-  if (!isEmitter) return;
+  if (!isEmitter) {
+    logDebug('skip emit: emitter selection denied', {
+      hookType: 'updateToken',
+      reason: 'Current client is not selected emitter',
+      tokenId: token?.id ?? null,
+      tokenName: token?.name ?? null,
+      hookUserId: userId ?? null,
+    });
+    return;
+  }
   const auraChecks = getStandardAuraChecks(token);
   let occupancyMap = currentAuraOccupancy.get(token.id) ?? new Map();
 
@@ -456,12 +532,13 @@ Hooks.on('updateToken', async (tokenDoc, change, _options, userId) => {
           round,
           turn,
         });
-        game.socket.emit(`module.${MODULE_ID}`, {
+        emitAuraEvent({
           type: AURA_EVENT_TYPE,
           eventKind: AURA_EVENT_KINDS.ENTER,
           tokenId: token.id,
           enemyId: source.id,
           auraSlug: aura.slug,
+          combatId: game.combat?.id ?? null,
           round,
           turn,
         });
@@ -536,12 +613,13 @@ Hooks.on('updateToken', async (tokenDoc, change, _options, userId) => {
       (WINTER_SLEET_TRIGGER_ON_MOVE_WITHIN && previousInside && isInside);
 
     if (shouldTrigger) {
-      game.socket.emit(`module.${MODULE_ID}`, {
+      emitAuraEvent({
         type: AURA_EVENT_TYPE,
         eventKind: AURA_EVENT_KINDS.WINTER_SLEET,
         tokenId: token.id,
         enemyId: source.id,
         auraSlug: WINTER_SLEET_AURA_SLUG,
+        combatId: game.combat?.id ?? null,
         round: game.combat?.round ?? 0,
         turn: game.combat?.turn ?? 0,
       });
