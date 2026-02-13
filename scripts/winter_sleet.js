@@ -4,11 +4,18 @@ const AURA_SOURCE_FLAG = 'kinetic-source';
 const WINTER_SLEET_REFRESH_EVENT_TYPE = 'WINTER_SLEET_REFRESH';
 const WINTER_SLEET_BALANCE_EVENT_TYPE = 'WINTER_SLEET_BALANCE';
 const WINTER_SLEET_AURA_SLUG = 'kinetic-aura';
+const WINTER_SLEET_EFFECT_AURA_SLUG = 'effect-kinetic-aura';
 const WINTER_SLEET_STANCE_SLUG = 'stance-winter-sleet';
 const WINTER_SLEET_EVENT_TTL_MS = 5000;
+const WINTER_SLEET_ITEM_REFRESH_DEBOUNCE_MS = 150;
+const WINTER_SLEET_RELEVANT_SLUGS = new Set([
+  WINTER_SLEET_EFFECT_AURA_SLUG,
+  WINTER_SLEET_STANCE_SLUG,
+]);
 
 const movementStarts = new Map();
 const recentWinterSleetEvents = new Map();
+let pendingWinterSleetRefresh = null;
 
 function getWinterSleetEventKey({ type, tokenId, sourceId, round, turn }) {
   return `${type}:${tokenId}:${sourceId}:${round}:${turn}`;
@@ -46,11 +53,23 @@ function isResponsibleOwnerClient(token) {
   return ownerUsers[0].id === game.user.id;
 }
 
-function hasAnyWinterSleetAura() {
+function getKineticAura(actor) {
+  return (
+    actor?.auras?.get(WINTER_SLEET_EFFECT_AURA_SLUG) ??
+    actor?.auras?.get(WINTER_SLEET_AURA_SLUG) ??
+    null
+  );
+}
+
+function hasKineticSleetAura() {
   return canvas.tokens.placeables.some((token) => {
     if (!token.actor) return false;
     return (
-      token.actor.itemTypes.effect.some((e) => e.slug === WINTER_SLEET_AURA_SLUG) &&
+      token.actor.itemTypes.effect.some(
+        (e) =>
+          e.slug === WINTER_SLEET_EFFECT_AURA_SLUG ||
+          e.slug === WINTER_SLEET_AURA_SLUG
+      ) &&
       token.actor.itemTypes.effect.some((e) => e.slug === WINTER_SLEET_STANCE_SLUG)
     );
   });
@@ -86,9 +105,13 @@ function getWinterSleetSourcesForToken(token) {
     if (!enemy.actor.isEnemyOf(token.actor)) return false;
     if (!isVisibleToParty(enemy)) return false;
     return (
-      enemy.actor.itemTypes.effect.some((e) => e.slug === WINTER_SLEET_AURA_SLUG) &&
+      enemy.actor.itemTypes.effect.some(
+        (e) =>
+          e.slug === WINTER_SLEET_EFFECT_AURA_SLUG ||
+          e.slug === WINTER_SLEET_AURA_SLUG
+      ) &&
       enemy.actor.itemTypes.effect.some((e) => e.slug === WINTER_SLEET_STANCE_SLUG) &&
-      enemy.actor.auras?.get(WINTER_SLEET_AURA_SLUG)
+      getKineticAura(enemy.actor)
     );
   });
 }
@@ -106,10 +129,14 @@ async function refreshPlayerAuras() {
 
   const active = new Map();
   for (const player of players) {
-    const hasAura = player.actor.itemTypes.effect.some((e) => e.slug === WINTER_SLEET_AURA_SLUG);
+    const hasAura = player.actor.itemTypes.effect.some(
+      (e) =>
+        e.slug === WINTER_SLEET_EFFECT_AURA_SLUG ||
+        e.slug === WINTER_SLEET_AURA_SLUG
+    );
     const hasSleet = player.actor.itemTypes.effect.some((e) => e.slug === WINTER_SLEET_STANCE_SLUG);
     if (!hasAura || !hasSleet) continue;
-    const aura = player.actor.auras?.get(WINTER_SLEET_AURA_SLUG);
+    const aura = getKineticAura(player.actor);
     if (!aura) continue;
     active.set(player.id, { token: player, radius: aura.radius });
   }
@@ -158,6 +185,21 @@ function emitWinterSleetRefresh() {
   });
 }
 
+function scheduleWinterSleetRefresh() {
+  if (!game.user.isGM) return;
+  if (pendingWinterSleetRefresh) {
+    clearTimeout(pendingWinterSleetRefresh);
+  }
+  pendingWinterSleetRefresh = setTimeout(async () => {
+    pendingWinterSleetRefresh = null;
+    await refreshPlayerAuras();
+  }, WINTER_SLEET_ITEM_REFRESH_DEBOUNCE_MS);
+}
+
+function isRelevantWinterSleetItem(item) {
+  return WINTER_SLEET_RELEVANT_SLUGS.has(item?.slug);
+}
+
 function emitWinterSleetBalance({ tokenId, sourceId }) {
   game.socket.emit(`module.${MODULE_ID}`, {
     type: WINTER_SLEET_BALANCE_EVENT_TYPE,
@@ -200,14 +242,14 @@ Hooks.once('ready', () => {
 
 Hooks.on('pf2e.startTurn', async () => {
   if (game.user.isGM) return;
-  if (!hasAnyWinterSleetAura()) return;
+  if (!hasKineticSleetAura()) return;
   emitWinterSleetRefresh();
 });
 
 Hooks.on('updateToken', async (tokenDoc, change) => {
   if (game.user.isGM) return;
   if (change.x === undefined && change.y === undefined) return;
-  if (!hasAnyWinterSleetAura()) return;
+  if (!hasKineticSleetAura()) return;
 
   const token = tokenDoc.object;
   if (!token || !isResponsibleOwnerClient(token)) return;
@@ -223,9 +265,10 @@ Hooks.on('updateToken', async (tokenDoc, change) => {
       const startMap = new Map();
       for (const source of sources) {
         const aura = source.actor.auras?.get(WINTER_SLEET_AURA_SLUG);
-        if (!aura) continue;
+        const kineticAura = aura ?? getKineticAura(source.actor);
+        if (!kineticAura) continue;
         const distance = canvas.grid.measureDistance(startPoint, source.center);
-        startMap.set(source.id, distance <= aura.radius);
+        startMap.set(source.id, distance <= kineticAura.radius);
       }
       movementStarts.set(token.id, startMap);
     }
@@ -238,10 +281,11 @@ Hooks.on('updateToken', async (tokenDoc, change) => {
 
   for (const source of sources) {
     const aura = source.actor.auras?.get(WINTER_SLEET_AURA_SLUG);
-    if (!aura) continue;
+    const kineticAura = aura ?? getKineticAura(source.actor);
+    if (!kineticAura) continue;
     const startedInside = startMap.get(source.id) ?? false;
     const distance = canvas.grid.measureDistance(token.center, source.center);
-    const endedInside = distance <= aura.radius;
+    const endedInside = distance <= kineticAura.radius;
 
     if (startedInside || endedInside) {
       emitWinterSleetBalance({ tokenId: token.id, sourceId: source.id });
@@ -251,19 +295,23 @@ Hooks.on('updateToken', async (tokenDoc, change) => {
   emitWinterSleetRefresh();
 });
 
-Hooks.on('createItem', () => {
-  if (!game.user.isGM) return;
-  refreshPlayerAuras();
+Hooks.on('createItem', (item) => {
+  if (!game.user.isGM || !isRelevantWinterSleetItem(item)) return;
+  scheduleWinterSleetRefresh();
 });
 
-Hooks.on('deleteItem', () => {
-  if (!game.user.isGM) return;
-  refreshPlayerAuras();
+Hooks.on('deleteItem', (item) => {
+  if (!game.user.isGM || !isRelevantWinterSleetItem(item)) return;
+  scheduleWinterSleetRefresh();
 });
 
-Hooks.on('updateItem', () => {
+Hooks.on('updateItem', (item, changed) => {
   if (!game.user.isGM) return;
-  refreshPlayerAuras();
+  const changedSlug = changed?.slug;
+  if (!isRelevantWinterSleetItem(item) && !WINTER_SLEET_RELEVANT_SLUGS.has(changedSlug)) {
+    return;
+  }
+  scheduleWinterSleetRefresh();
 });
 
 Hooks.on('deleteToken', (tokenDoc) => {
