@@ -71,6 +71,19 @@ Hooks.once('ready', () => {
     }
     if (isDuplicateAuraEvent(payload)) return;
 
+    const token = canvas.tokens.get(payload.tokenId);
+    const enemy = canvas.tokens.get(payload.enemyId);
+    logDebug('Aura event received (gm)', {
+      eventKind: payload.eventKind,
+      tokenId: payload.tokenId,
+      tokenName: token?.name ?? null,
+      sourceId: payload.enemyId,
+      sourceName: enemy?.name ?? null,
+      auraSlug: payload.auraSlug,
+      round: payload.round,
+      turn: payload.turn,
+    });
+
     if (payload.eventKind === AURA_EVENT_KINDS.WINTER_SLEET) {
       const token = canvas.tokens.get(payload.tokenId);
       const source = canvas.tokens.get(payload.enemyId);
@@ -78,8 +91,6 @@ Hooks.once('ready', () => {
       return;
     }
 
-    const token = canvas.tokens.get(payload.tokenId);
-    const enemy = canvas.tokens.get(payload.enemyId);
     if (!token?.actor || !enemy?.actor) return;
     const aura = enemy?.actor?.auras?.get(payload.auraSlug);
     if (!token || !enemy || !aura) return;
@@ -320,14 +331,27 @@ Hooks.on('pf2e.startTurn', async (combatant) => {
       radius: aura.radius,
     });
     if (distance > aura.radius) continue;
+    const round = game.combat?.round ?? 0;
+    const turn = game.combat?.turn ?? 0;
+    logDebug('Aura detected (start-turn)', {
+      tokenId: token.id,
+      tokenName: token.name,
+      sourceId: source.id,
+      sourceName: source.name,
+      auraSlug: aura.slug,
+      distance,
+      radius: aura.radius,
+      round,
+      turn,
+    });
     game.socket.emit(`module.${MODULE_ID}`, {
       type: AURA_EVENT_TYPE,
       eventKind: AURA_EVENT_KINDS.START_TURN,
       tokenId: token.id,
       enemyId: source.id,
       auraSlug: aura.slug,
-      round: game.combat?.round ?? 0,
-      turn: game.combat?.turn ?? 0,
+      round,
+      turn,
     });
   }
 
@@ -393,14 +417,27 @@ Hooks.on('updateToken', async (tokenDoc, change, _options, _userId) => {
     const isInside = newDistance <= aura.radius;
     if (isInside) {
       if (!previousInside) {
+        const round = game.combat?.round ?? 0;
+        const turn = game.combat?.turn ?? 0;
+        logDebug('Aura detected (enter)', {
+          tokenId: token.id,
+          tokenName: token.name,
+          sourceId: source.id,
+          sourceName: source.name,
+          auraSlug: aura.slug,
+          distance: newDistance,
+          radius: aura.radius,
+          round,
+          turn,
+        });
         game.socket.emit(`module.${MODULE_ID}`, {
           type: AURA_EVENT_TYPE,
           eventKind: AURA_EVENT_KINDS.ENTER,
           tokenId: token.id,
           enemyId: source.id,
           auraSlug: aura.slug,
-          round: game.combat?.round ?? 0,
-          turn: game.combat?.turn ?? 0,
+          round,
+          turn,
         });
       }
       occupancyMap.set(key, true);
