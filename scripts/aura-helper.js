@@ -42,6 +42,7 @@ Hooks.once('ready', () => {
 
     const token = canvas.tokens.get(payload.tokenId);
     const enemy = canvas.tokens.get(payload.enemyId);
+    if (!token?.actor || !enemy?.actor) return;
     const aura = enemy?.actor?.auras?.get(payload.auraSlug);
     if (!token || !enemy || !aura) return;
 
@@ -76,6 +77,22 @@ function isVisibleToParty(enemyToken) {
   return partyTokens.some((playerToken) =>
     visibility.testVisibility(enemyToken.center, { object: playerToken })
   );
+}
+
+function isResponsibleOwnerClient(token) {
+  if (!token?.actor || game.user.isGM) return false;
+  if (!token.actor.testUserPermission(game.user, 'OWNER')) return false;
+
+  const ownership = token.actor.ownership ?? {};
+  const ownerUsers = game.users.filter((user) => {
+    if (user.isGM || !user.active) return false;
+    const level = ownership[user.id] ?? ownership.default ?? 0;
+    return level >= CONST.DOCUMENT_OWNERSHIP_LEVELS.OWNER;
+  });
+
+  if (ownerUsers.length === 0) return true;
+  ownerUsers.sort((a, b) => a.id.localeCompare(b.id));
+  return ownerUsers[0].id === game.user.id;
 }
 
 function hasKineticSleetAura() {
@@ -219,7 +236,7 @@ Hooks.on('pf2e.startTurn', async (combatant) => {
   if (game.user.isGM) return;
   console.debug('[Aura Helper] pf2e.startTurn', { combatant });
   const token = combatant.token?.object ?? combatant.token;
-  if (!token?.actor?.testUserPermission(game.user, 'OWNER')) return;
+  if (!isResponsibleOwnerClient(token)) return;
   const partyMembers = game.actors.party?.members ?? [];
   const isPartyMember = partyMembers.some(
     (member) => member.id === token.actor.id
@@ -272,13 +289,12 @@ Hooks.on('pf2e.startTurn', async (combatant) => {
   }
 });
 
-Hooks.on('updateToken', async (tokenDoc, change, _options, userId) => {
+Hooks.on('updateToken', async (tokenDoc, change, _options, _userId) => {
   if (game.user.isGM) return;
   if (change.x === undefined && change.y === undefined) return;
-  if (userId !== game.user.id) return;
   const token = tokenDoc.object;
   if (!token) return;
-  if (!token.actor?.testUserPermission(game.user, 'OWNER')) return;
+  if (!isResponsibleOwnerClient(token)) return;
   const partyMembers = game.actors.party?.members ?? [];
   const isPartyMember = partyMembers.some(
     (member) => member.id === token.actor?.id
