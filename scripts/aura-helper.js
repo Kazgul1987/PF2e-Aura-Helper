@@ -255,6 +255,13 @@ function isResponsibleOwnerClient(token) {
   return ownerUsers[0].id === game.user.id;
 }
 
+function isEmitterForTokenChange(token, userIdFromUpdate) {
+  if (!token?.actor) return false;
+  if (userIdFromUpdate && userIdFromUpdate === game.user.id) return true;
+  if (!userIdFromUpdate) return game.user.isGM;
+  return token.actor.testUserPermission(game.user, 'OWNER');
+}
+
 async function handleAura({ token, enemy, aura, message, whisperToGm = false }) {
   const effect = aura.effects?.[0];
   logDebug('aura effect', effect);
@@ -312,10 +319,9 @@ async function handleAura({ token, enemy, aura, message, whisperToGm = false }) 
 }
 
 Hooks.on('pf2e.startTurn', async (combatant) => {
-  if (game.user.isGM) return;
   logDebug('pf2e.startTurn', { combatant });
   const token = combatant.token?.object ?? combatant.token;
-  if (!isResponsibleOwnerClient(token)) return;
+  if (!isEmitterForTokenChange(token)) return;
   const auraChecks = getStandardAuraChecks(token);
   logDebug(
     'standard aura sources in scene',
@@ -357,13 +363,12 @@ Hooks.on('pf2e.startTurn', async (combatant) => {
 
 });
 
-Hooks.on('updateToken', async (tokenDoc, change, _options, _userId) => {
+Hooks.on('updateToken', async (tokenDoc, change, _options, userIdFromUpdate) => {
   logInfo('updateToken received', { tokenId: tokenDoc.id, change });
-  if (game.user.isGM) return;
   if (change.x === undefined && change.y === undefined) return;
   const token = tokenDoc.object;
   if (!token) return;
-  if (!isResponsibleOwnerClient(token)) return;
+  if (!isEmitterForTokenChange(token, userIdFromUpdate)) return;
   const auraChecks = getStandardAuraChecks(token);
   let occupancyMap = currentAuraOccupancy.get(token.id) ?? new Map();
 
