@@ -1,8 +1,61 @@
 const movementStarts = new Map();
 const currentAuraOccupancy = new Map();
+const recentAuraEvents = new Map();
 
+const MODULE_ID = 'pf2e-aura-helper';
 const AURA_FLAG = 'pf2e-aura-helper';
 const AURA_SOURCE_FLAG = 'kinetic-source';
+const AURA_EVENT_TYPE = 'AURA_EVENT';
+const AURA_EVENT_KINDS = {
+  START_TURN: 'START_TURN',
+  ENTER: 'ENTER',
+};
+const AURA_EVENT_TTL_MS = 5000;
+
+function getAuraEventKey({ eventKind, tokenId, enemyId, auraSlug, round, turn }) {
+  return `${eventKind}:${tokenId}:${enemyId}:${auraSlug}:${round}:${turn}`;
+}
+
+function isDuplicateAuraEvent(payload) {
+  const key = getAuraEventKey(payload);
+  const now = Date.now();
+  for (const [cachedKey, expiresAt] of recentAuraEvents) {
+    if (expiresAt <= now) recentAuraEvents.delete(cachedKey);
+  }
+  const cached = recentAuraEvents.get(key);
+  if (cached && cached > now) return true;
+  recentAuraEvents.set(key, now + AURA_EVENT_TTL_MS);
+  return false;
+}
+
+Hooks.once('ready', () => {
+  game.socket.on(`module.${MODULE_ID}`, async (payload) => {
+    if (!game.user.isGM) return;
+    if (!payload || payload.type !== AURA_EVENT_TYPE) return;
+    if (
+      payload.eventKind !== AURA_EVENT_KINDS.START_TURN &&
+      payload.eventKind !== AURA_EVENT_KINDS.ENTER
+    ) {
+      return;
+    }
+    if (isDuplicateAuraEvent(payload)) return;
+
+    const token = canvas.tokens.get(payload.tokenId);
+    const enemy = canvas.tokens.get(payload.enemyId);
+    const aura = enemy?.actor?.auras?.get(payload.auraSlug);
+    if (!token || !enemy || !aura) return;
+
+    await handleAura({
+      token,
+      enemy,
+      aura,
+      message: (auraLink) =>
+        payload.eventKind === AURA_EVENT_KINDS.START_TURN
+          ? `${token.name} beginnt seinen Zug innerhalb der Aura ${auraLink} von ${enemy.name}.`
+          : `${token.name} betritt die Aura ${auraLink} von ${enemy.name}.`,
+    });
+  });
+});
 
 function getPartyTokens() {
   const partyMembers = game.actors.party?.members ?? [];
@@ -163,8 +216,10 @@ async function handleAura({ token, enemy, aura, message }) {
 }
 
 Hooks.on('pf2e.startTurn', async (combatant) => {
+  if (game.user.isGM) return;
   console.debug('[Aura Helper] pf2e.startTurn', { combatant });
   const token = combatant.token?.object ?? combatant.token;
+  if (!token?.actor?.testUserPermission(game.user, 'OWNER')) return;
   const partyMembers = game.actors.party?.members ?? [];
   const isPartyMember = partyMembers.some(
     (member) => member.id === token.actor.id
@@ -199,12 +254,14 @@ Hooks.on('pf2e.startTurn', async (combatant) => {
           radius: aura.radius,
         });
         if (distance > aura.radius) continue;
-        await handleAura({
-          token,
-          enemy,
-          aura,
-          message: (auraLink) =>
-            `${token.name} beginnt seinen Zug innerhalb der Aura ${auraLink} von ${enemy.name}.`,
+        game.socket.emit(`module.${MODULE_ID}`, {
+          type: AURA_EVENT_TYPE,
+          eventKind: AURA_EVENT_KINDS.START_TURN,
+          tokenId: token.id,
+          enemyId: enemy.id,
+          auraSlug: aura.slug,
+          round: game.combat?.round ?? 0,
+          turn: game.combat?.turn ?? 0,
         });
       }
     }
@@ -216,10 +273,12 @@ Hooks.on('pf2e.startTurn', async (combatant) => {
 });
 
 Hooks.on('updateToken', async (tokenDoc, change, _options, userId) => {
+  if (game.user.isGM) return;
   if (change.x === undefined && change.y === undefined) return;
   if (userId !== game.user.id) return;
   const token = tokenDoc.object;
   if (!token) return;
+  if (!token.actor?.testUserPermission(game.user, 'OWNER')) return;
   const partyMembers = game.actors.party?.members ?? [];
   const isPartyMember = partyMembers.some(
     (member) => member.id === token.actor?.id
@@ -328,12 +387,14 @@ Hooks.on('updateToken', async (tokenDoc, change, _options, userId) => {
         const isInside = newDistance <= aura.radius;
         if (isInside) {
           if (!previousInside) {
-            await handleAura({
-              token,
-              enemy,
-              aura,
-              message: (auraLink) =>
-                `${token.name} betritt die Aura ${auraLink} von ${enemy.name}.`,
+            game.socket.emit(`module.${MODULE_ID}`, {
+              type: AURA_EVENT_TYPE,
+              eventKind: AURA_EVENT_KINDS.ENTER,
+              tokenId: token.id,
+              enemyId: enemy.id,
+              auraSlug: aura.slug,
+              round: game.combat?.round ?? 0,
+              turn: game.combat?.turn ?? 0,
             });
           }
           occupancyMap.set(key, true);
