@@ -6,6 +6,7 @@ const MODULE_ID = 'pf2e-aura-helper';
 const AURA_FLAG = 'pf2e-aura-helper';
 const AURA_SOURCE_FLAG = 'kinetic-source';
 const AURA_EVENT_TYPE = 'AURA_EVENT';
+const WINTER_SLEET_REFRESH_EVENT_TYPE = 'WINTER_SLEET_REFRESH';
 const AURA_EVENT_KINDS = {
   START_TURN: 'START_TURN',
   ENTER: 'ENTER',
@@ -31,7 +32,14 @@ function isDuplicateAuraEvent(payload) {
 Hooks.once('ready', () => {
   game.socket.on(`module.${MODULE_ID}`, async (payload) => {
     if (!game.user.isGM) return;
-    if (!payload || payload.type !== AURA_EVENT_TYPE) return;
+    if (!payload) return;
+
+    if (payload.type === WINTER_SLEET_REFRESH_EVENT_TYPE) {
+      await refreshPlayerAuras();
+      return;
+    }
+
+    if (payload.type !== AURA_EVENT_TYPE) return;
     if (
       payload.eventKind !== AURA_EVENT_KINDS.START_TURN &&
       payload.eventKind !== AURA_EVENT_KINDS.ENTER
@@ -110,6 +118,8 @@ function gmIds() {
 }
 
 async function refreshPlayerAuras() {
+  if (!game.user.isGM) return;
+
   const tokens = canvas.tokens.placeables.filter(
     (t) => t.actor && (t.isVisible ?? !t.document.hidden)
   );
@@ -176,6 +186,12 @@ async function refreshPlayerAuras() {
       await token.actor.createEmbeddedDocuments('Item', [condition]);
     }
   }
+}
+
+function emitWinterSleetRefresh() {
+  game.socket.emit(`module.${MODULE_ID}`, {
+    type: WINTER_SLEET_REFRESH_EVENT_TYPE,
+  });
 }
 
 async function handleAura({ token, enemy, aura, message, whisperToGm = false }) {
@@ -286,9 +302,7 @@ Hooks.on('pf2e.startTurn', async (combatant) => {
     }
   }
 
-  if (hasKineticSleetAura()) {
-    await refreshPlayerAuras();
-  }
+  if (hasKineticSleetAura()) emitWinterSleetRefresh();
 });
 
 Hooks.on('updateToken', async (tokenDoc, change, _options, _userId) => {
@@ -384,9 +398,7 @@ Hooks.on('updateToken', async (tokenDoc, change, _options, _userId) => {
         }
         movementStarts.set(token.id, startMap);
       }
-      if (hasKineticSleetAura()) {
-        await refreshPlayerAuras();
-      }
+      if (hasKineticSleetAura()) emitWinterSleetRefresh();
       return;
     }
 
@@ -433,9 +445,7 @@ Hooks.on('updateToken', async (tokenDoc, change, _options, _userId) => {
     }
   }
 
-  if (hasKineticSleetAura()) {
-    await refreshPlayerAuras();
-  }
+  if (hasKineticSleetAura()) emitWinterSleetRefresh();
 });
 
 Hooks.on('deleteToken', (tokenDoc) => {
