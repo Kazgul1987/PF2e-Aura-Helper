@@ -131,6 +131,49 @@ function isVisibleToParty(enemyToken) {
   );
 }
 
+function isCombatRelevantToken(token) {
+  if (!token?.actor) return false;
+  const isHidden = token.document?.hidden ?? false;
+  const isDefeated = token.combatant?.isDefeated ?? token.combatant?.defeated ?? false;
+  return !isHidden && !isDefeated;
+}
+
+function isPartyMemberActor(actor) {
+  if (!actor) return false;
+  const partyMembers = game.actors.party?.members ?? [];
+  return partyMembers.some((member) => member.id === actor.id);
+}
+
+function getStandardAuraSources(activeToken) {
+  if (!activeToken?.actor) return [];
+
+  const isActivePartyMember = isPartyMemberActor(activeToken.actor);
+  return canvas.tokens.placeables.filter((candidate) => {
+    if (!isCombatRelevantToken(candidate)) return false;
+    if (!candidate.actor.isEnemyOf(activeToken.actor)) return false;
+
+    if (isActivePartyMember) {
+      return isVisibleToParty(candidate);
+    }
+
+    return candidate.isVisible ?? !candidate.document?.hidden;
+  });
+}
+
+function getStandardAuraChecks(activeToken) {
+  const sources = getStandardAuraSources(activeToken);
+  const checks = [];
+
+  for (const source of sources) {
+    const auras = source.actor?.auras ? [...source.actor.auras.values()] : [];
+    for (const aura of auras) {
+      checks.push({ source, aura });
+    }
+  }
+
+  return checks;
+}
+
 function gmIds() {
   return game.users.filter((u) => u.isGM).map((u) => u.id);
 }
@@ -212,51 +255,30 @@ Hooks.on('pf2e.startTurn', async (combatant) => {
   console.debug('[Aura Helper] pf2e.startTurn', { combatant });
   const token = combatant.token?.object ?? combatant.token;
   if (!isResponsibleOwnerClient(token)) return;
-  const partyMembers = game.actors.party?.members ?? [];
-  const isPartyMember = partyMembers.some(
-    (member) => member.id === token.actor.id
+  const auraChecks = getStandardAuraChecks(token);
+  console.debug(
+    '[Aura Helper] standard aura sources in scene',
+    auraChecks.map(({ source, aura }) => `${source.name}:${aura.slug}`)
   );
 
-  if (isPartyMember) {
-    const enemies = canvas.tokens.placeables.filter((t) => {
-      const isHidden = t.document?.hidden ?? false;
-      const isDefeated =
-        t.combatant?.isDefeated ?? t.combatant?.defeated ?? false;
-      return (
-        !!t.actor &&
-        t.actor.isEnemyOf(combatant.actor) &&
-        !isHidden &&
-        !isDefeated &&
-        isVisibleToParty(t)
-      );
+  for (const { source, aura } of auraChecks) {
+    const distance = canvas.grid.measureDistance(token, source);
+    console.debug('[Aura Helper] evaluating aura', {
+      source: source.name,
+      aura: aura.slug,
+      distance,
+      radius: aura.radius,
     });
-    console.debug('[Aura Helper] enemies in scene', enemies.map((e) => e.name));
-
-    for (const enemy of enemies) {
-      const auras = enemy.actor?.auras ? [...enemy.actor.auras.values()] : [];
-      console.debug('[Aura Helper] checking enemy auras', {
-        enemy: enemy.name,
-        auras: auras.map((a) => a.slug),
-      });
-      for (const aura of auras) {
-        const distance = canvas.grid.measureDistance(token, enemy);
-        console.debug('[Aura Helper] evaluating aura', {
-          aura: aura.slug,
-          distance,
-          radius: aura.radius,
-        });
-        if (distance > aura.radius) continue;
-        game.socket.emit(`module.${MODULE_ID}`, {
-          type: AURA_EVENT_TYPE,
-          eventKind: AURA_EVENT_KINDS.START_TURN,
-          tokenId: token.id,
-          enemyId: enemy.id,
-          auraSlug: aura.slug,
-          round: game.combat?.round ?? 0,
-          turn: game.combat?.turn ?? 0,
-        });
-      }
-    }
+    if (distance > aura.radius) continue;
+    game.socket.emit(`module.${MODULE_ID}`, {
+      type: AURA_EVENT_TYPE,
+      eventKind: AURA_EVENT_KINDS.START_TURN,
+      tokenId: token.id,
+      enemyId: source.id,
+      auraSlug: aura.slug,
+      round: game.combat?.round ?? 0,
+      turn: game.combat?.turn ?? 0,
+    });
   }
 
 });
@@ -267,137 +289,82 @@ Hooks.on('updateToken', async (tokenDoc, change, _options, _userId) => {
   const token = tokenDoc.object;
   if (!token) return;
   if (!isResponsibleOwnerClient(token)) return;
-  const partyMembers = game.actors.party?.members ?? [];
-  const isPartyMember = partyMembers.some(
-    (member) => member.id === token.actor?.id
-  );
+  const auraChecks = getStandardAuraChecks(token);
+  let occupancyMap = currentAuraOccupancy.get(token.id) ?? new Map();
 
-  if (isPartyMember) {
-    const potentialEnemies = canvas.tokens.placeables.filter((t) => {
-      const isHidden = t.document?.hidden ?? false;
-      const isDefeated =
-        t.combatant?.isDefeated ?? t.combatant?.defeated ?? false;
-      return (
-        !!t.actor &&
-        t.actor.isEnemyOf(token.actor) &&
-        !isHidden &&
-        !isDefeated
-      );
-    });
-
-    const visibleEnemies = [];
-    const invisibleEnemies = [];
-    for (const enemy of potentialEnemies) {
-      if (isVisibleToParty(enemy)) {
-        visibleEnemies.push(enemy);
-      } else {
-        invisibleEnemies.push(enemy);
-      }
-    }
-
-    let occupancyMap = currentAuraOccupancy.get(token.id) ?? new Map();
-    if (invisibleEnemies.length > 0) {
-      const startMap = movementStarts.get(token.id);
-      for (const enemy of invisibleEnemies) {
-        const auras = enemy.actor?.auras ? [...enemy.actor.auras.values()] : [];
-        for (const aura of auras) {
-          const key = `${enemy.id}-${aura.slug}`;
-          occupancyMap.delete(key);
-          startMap?.delete(key);
-        }
-      }
-      if (startMap && startMap.size === 0) {
-        movementStarts.delete(token.id);
-      }
-      if (occupancyMap.size === 0) {
-        currentAuraOccupancy.delete(token.id);
-      } else {
-        currentAuraOccupancy.set(token.id, occupancyMap);
-      }
-    }
-
-    const enemies = visibleEnemies;
-
-    if (token._movement) {
-      if (!movementStarts.has(token.id)) {
-        const processedKeys = new Set();
-        const startPoint =
-          token._movement?.rays?.[0]?.A ??
-          token._movement?.ray?.A ?? {
-            x: token.center.x,
-            y: token.center.y,
-          };
-        const startMap = new Map();
-        occupancyMap = currentAuraOccupancy.get(token.id) ?? new Map();
-        for (const enemy of enemies) {
-          const auras = enemy.actor?.auras ? [...enemy.actor.auras.values()] : [];
-          for (const aura of auras) {
-            const key = `${enemy.id}-${aura.slug}`;
-            const distance = canvas.grid.measureDistance(startPoint, enemy.center);
-            const isInside = distance <= aura.radius;
-            startMap.set(key, isInside);
-            if (isInside) {
-              occupancyMap.set(key, true);
-            } else {
-              occupancyMap.delete(key);
-            }
-            processedKeys.add(key);
-          }
-        }
-        for (const key of [...occupancyMap.keys()]) {
-          if (!processedKeys.has(key)) occupancyMap.delete(key);
-        }
-        if (occupancyMap.size > 0) {
-          currentAuraOccupancy.set(token.id, occupancyMap);
-        } else {
-          currentAuraOccupancy.delete(token.id);
-        }
-        movementStarts.set(token.id, startMap);
-      }
-      return;
-    }
-
-    const startMap = movementStarts.get(token.id) ?? new Map();
-    movementStarts.delete(token.id);
-    occupancyMap = currentAuraOccupancy.get(token.id) ?? new Map();
-    const processedKeys = new Set();
-    for (const enemy of enemies) {
-      const auras = enemy.actor?.auras ? [...enemy.actor.auras.values()] : [];
-      for (const aura of auras) {
-        const key = `${enemy.id}-${aura.slug}`;
-        processedKeys.add(key);
-        const previousInside =
-          (startMap.has(key) ? startMap.get(key) : occupancyMap.get(key)) ?? false;
-        const newDistance = canvas.grid.measureDistance(token.center, enemy.center);
-        const isInside = newDistance <= aura.radius;
+  if (token._movement) {
+    if (!movementStarts.has(token.id)) {
+      const processedKeys = new Set();
+      const startPoint =
+        token._movement?.rays?.[0]?.A ??
+        token._movement?.ray?.A ?? {
+          x: token.center.x,
+          y: token.center.y,
+        };
+      const startMap = new Map();
+      occupancyMap = currentAuraOccupancy.get(token.id) ?? new Map();
+      for (const { source, aura } of auraChecks) {
+        const key = `${source.id}-${aura.slug}`;
+        const distance = canvas.grid.measureDistance(startPoint, source.center);
+        const isInside = distance <= aura.radius;
+        startMap.set(key, isInside);
         if (isInside) {
-          if (!previousInside) {
-            game.socket.emit(`module.${MODULE_ID}`, {
-              type: AURA_EVENT_TYPE,
-              eventKind: AURA_EVENT_KINDS.ENTER,
-              tokenId: token.id,
-              enemyId: enemy.id,
-              auraSlug: aura.slug,
-              round: game.combat?.round ?? 0,
-              turn: game.combat?.turn ?? 0,
-            });
-          }
           occupancyMap.set(key, true);
-        } else if (occupancyMap.get(key)) {
+        } else {
           occupancyMap.delete(key);
         }
+        processedKeys.add(key);
       }
-    }
-    for (const key of [...occupancyMap.keys()]) {
-      if (!processedKeys.has(key)) {
-        occupancyMap.delete(key);
+      for (const key of [...occupancyMap.keys()]) {
+        if (!processedKeys.has(key)) occupancyMap.delete(key);
       }
+      if (occupancyMap.size > 0) {
+        currentAuraOccupancy.set(token.id, occupancyMap);
+      } else {
+        currentAuraOccupancy.delete(token.id);
+      }
+      movementStarts.set(token.id, startMap);
     }
-    if (occupancyMap.size > 0) {
-      currentAuraOccupancy.set(token.id, occupancyMap);
-    } else {
-      currentAuraOccupancy.delete(token.id);
+    return;
+  }
+
+  const standardStartMap = movementStarts.get(token.id) ?? new Map();
+  movementStarts.delete(token.id);
+  occupancyMap = currentAuraOccupancy.get(token.id) ?? new Map();
+  const processedKeys = new Set();
+  for (const { source, aura } of auraChecks) {
+    const key = `${source.id}-${aura.slug}`;
+    processedKeys.add(key);
+    const previousInside =
+      (standardStartMap.has(key) ? standardStartMap.get(key) : occupancyMap.get(key)) ?? false;
+    const newDistance = canvas.grid.measureDistance(token.center, source.center);
+    const isInside = newDistance <= aura.radius;
+    if (isInside) {
+      if (!previousInside) {
+        game.socket.emit(`module.${MODULE_ID}`, {
+          type: AURA_EVENT_TYPE,
+          eventKind: AURA_EVENT_KINDS.ENTER,
+          tokenId: token.id,
+          enemyId: source.id,
+          auraSlug: aura.slug,
+          round: game.combat?.round ?? 0,
+          turn: game.combat?.turn ?? 0,
+        });
+      }
+      occupancyMap.set(key, true);
+    } else if (occupancyMap.get(key)) {
+      occupancyMap.delete(key);
     }
+  }
+  for (const key of [...occupancyMap.keys()]) {
+    if (!processedKeys.has(key)) {
+      occupancyMap.delete(key);
+    }
+  }
+  if (occupancyMap.size > 0) {
+    currentAuraOccupancy.set(token.id, occupancyMap);
+  } else {
+    currentAuraOccupancy.delete(token.id);
   }
 
   const winterSleetSources = getWinterSleetSources();
