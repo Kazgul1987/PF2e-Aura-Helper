@@ -258,7 +258,7 @@ function isResponsibleOwnerClient(token) {
 function isEmitterForTokenChange(token, userIdFromUpdate) {
   if (!token?.actor) return false;
   if (userIdFromUpdate && userIdFromUpdate === game.user.id) return true;
-  if (!userIdFromUpdate) return game.user.isGM;
+  if (!userIdFromUpdate) return isResponsibleOwnerClient(token);
   return token.actor.testUserPermission(game.user, 'OWNER');
 }
 
