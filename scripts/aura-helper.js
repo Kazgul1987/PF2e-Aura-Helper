@@ -124,7 +124,7 @@ function isVisibleToParty(enemyToken) {
   if (!enemyToken) return false;
   const partyTokens = getPartyTokens();
   if (partyTokens.length === 0) return false;
-  const visibility = canvas.effects?.visibility;
+  const visibility = canvas.visibility ?? canvas.effects?.visibility;
   if (!visibility) return false;
   return partyTokens.some((playerToken) =>
     visibility.testVisibility(enemyToken.center, { object: playerToken })
