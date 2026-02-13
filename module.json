@@ -3,7 +3,7 @@
   "name": "pf2e-aura-helper",
   "title": "PF2e Aura Helper",
   "description": "Erinnert Spieler, wenn sie ihren Zug in einer feindlichen Aura beginnen und verlinkt die Aura im Chat.",
-  "version": "2.1.2",
+  "version": "2.1.3",
   "type": "module",
   "authors": [
     {
