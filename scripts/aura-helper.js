@@ -54,6 +54,7 @@ Hooks.once('ready', () => {
         payload.eventKind === AURA_EVENT_KINDS.START_TURN
           ? `${token.name} beginnt seinen Zug innerhalb der Aura ${auraLink} von ${enemy.name}.`
           : `${token.name} betritt die Aura ${auraLink} von ${enemy.name}.`,
+      whisperToGm: true,
     });
   });
 });
@@ -102,6 +103,10 @@ function hasKineticSleetAura() {
       t.actor.itemTypes.effect.some((e) => e.slug === 'effect-kinetic-aura') &&
       t.actor.itemTypes.effect.some((e) => e.slug === 'stance-winter-sleet')
   );
+}
+
+function gmIds() {
+  return game.users.filter((u) => u.isGM).map((u) => u.id);
 }
 
 async function refreshPlayerAuras() {
@@ -173,7 +178,7 @@ async function refreshPlayerAuras() {
   }
 }
 
-async function handleAura({ token, enemy, aura, message }) {
+async function handleAura({ token, enemy, aura, message, whisperToGm = false }) {
   const effect = aura.effects?.[0];
   console.debug('[Aura Helper] aura effect', effect);
   let originUuid =
@@ -199,9 +204,7 @@ async function handleAura({ token, enemy, aura, message }) {
       });
     }
     originUuid = originItem?.uuid ?? null;
-    if (originItem) {
-      await originItem.toMessage(undefined, { create: true });
-    } else {
+    if (!originItem) {
       console.warn('[Aura Helper] no matching item found for aura', {
         aura: aura.slug,
         enemy: enemy.name,
@@ -218,13 +221,12 @@ async function handleAura({ token, enemy, aura, message }) {
     token: token.document,
     actor: token.actor,
   });
-  await ChatMessage.create({ content, speaker });
-  if (!originItem && origin) {
-    await origin.toMessage(undefined, {
-      create: true,
-      data: { speaker },
-    });
-  } else if (!origin) {
+  await ChatMessage.create({
+    content,
+    speaker,
+    whisper: whisperToGm ? gmIds() : undefined,
+  });
+  if (!origin) {
     console.warn('[Aura Helper] no item to post for aura', {
       aura: aura.slug,
       enemy: enemy.name,
