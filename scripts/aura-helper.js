@@ -337,6 +337,7 @@ Hooks.on('updateToken', async (tokenDoc, change, _options, _userId) => {
     processedKeys.add(key);
     const previousInside =
       (standardStartMap.has(key) ? standardStartMap.get(key) : occupancyMap.get(key)) ?? false;
+    // Einmalige Distanzmessung für die Auswertung von isInside.
     const newDistance = canvas.grid.measureDistance(token.center, source.center);
     const isInside = newDistance <= aura.radius;
     if (isInside) {
