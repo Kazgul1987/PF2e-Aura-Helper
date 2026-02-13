@@ -255,10 +255,10 @@ function isResponsibleOwnerClient(token) {
   return ownerUsers[0].id === game.user.id;
 }
 
-function isEmitterForTokenChange(token, userIdFromUpdate) {
+function isEmitterForTokenChange(token, userId) {
   if (!token?.actor) return false;
-  if (userIdFromUpdate && userIdFromUpdate === game.user.id) return true;
-  if (!userIdFromUpdate) return isResponsibleOwnerClient(token);
+  if (userId && userId === game.user.id) return true;
+  if (!userId) return isResponsibleOwnerClient(token);
   return token.actor.testUserPermission(game.user, 'OWNER');
 }
 
@@ -363,12 +363,12 @@ Hooks.on('pf2e.startTurn', async (combatant) => {
 
 });
 
-Hooks.on('updateToken', async (tokenDoc, change, _options, userIdFromUpdate) => {
+Hooks.on('updateToken', async (tokenDoc, change, _options, userId) => {
   logInfo('updateToken received', { tokenId: tokenDoc.id, change });
   if (change.x === undefined && change.y === undefined) return;
   const token = tokenDoc.object;
   if (!token) return;
-  if (!isEmitterForTokenChange(token, userIdFromUpdate)) return;
+  if (!isEmitterForTokenChange(token, userId)) return;
   const auraChecks = getStandardAuraChecks(token);
   let occupancyMap = currentAuraOccupancy.get(token.id) ?? new Map();
 
