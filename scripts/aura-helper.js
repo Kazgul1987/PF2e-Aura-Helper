@@ -14,6 +14,31 @@ const WINTER_SLEET_AURA_SLUG = 'kinetic-aura';
 const WINTER_SLEET_EFFECT_SLUG = 'effect-kinetic-aura';
 const WINTER_SLEET_STANCE_SLUG = 'stance-winter-sleet';
 const WINTER_SLEET_TRIGGER_ON_MOVE_WITHIN = true;
+const SETTING_DEBUG_ENABLED = 'debugEnabled';
+const SETTING_LOG_LEVEL = 'logLevel';
+const LOG_LEVELS = {
+  OFF: 'off',
+  INFO: 'info',
+  DEBUG: 'debug',
+};
+
+function getLogLevel() {
+  const configuredLogLevel = game.settings.get(MODULE_ID, SETTING_LOG_LEVEL);
+  if (Object.values(LOG_LEVELS).includes(configuredLogLevel)) return configuredLogLevel;
+  const debugEnabled = game.settings.get(MODULE_ID, SETTING_DEBUG_ENABLED);
+  return debugEnabled ? LOG_LEVELS.DEBUG : LOG_LEVELS.OFF;
+}
+
+function logDebug(...args) {
+  if (getLogLevel() !== LOG_LEVELS.DEBUG) return;
+  console.debug('[Aura Helper]', ...args);
+}
+
+function logInfo(...args) {
+  const logLevel = getLogLevel();
+  if (logLevel !== LOG_LEVELS.INFO && logLevel !== LOG_LEVELS.DEBUG) return;
+  console.info('[Aura Helper]', ...args);
+}
 
 function getAuraEventKey({ eventKind, tokenId, enemyId, auraSlug, round, turn }) {
   return `${eventKind}:${tokenId}:${enemyId}:${auraSlug}:${round}:${turn}`;
@@ -69,6 +94,31 @@ Hooks.once('ready', () => {
           : `${token.name} betritt die Aura ${auraLink} von ${enemy.name}.`,
       whisperToGm: true,
     });
+  });
+});
+
+Hooks.once('init', () => {
+  game.settings.register(MODULE_ID, SETTING_DEBUG_ENABLED, {
+    name: 'Enable debug logging',
+    hint: 'Activates detailed debug logging for PF2e Aura Helper.',
+    scope: 'client',
+    config: true,
+    type: Boolean,
+    default: false,
+  });
+
+  game.settings.register(MODULE_ID, SETTING_LOG_LEVEL, {
+    name: 'Log level',
+    hint: 'Controls how much PF2e Aura Helper writes to the browser console.',
+    scope: 'client',
+    config: true,
+    type: String,
+    choices: {
+      [LOG_LEVELS.OFF]: 'Off',
+      [LOG_LEVELS.INFO]: 'Info',
+      [LOG_LEVELS.DEBUG]: 'Debug',
+    },
+    default: LOG_LEVELS.OFF,
   });
 });
 
@@ -196,7 +246,7 @@ function isResponsibleOwnerClient(token) {
 
 async function handleAura({ token, enemy, aura, message, whisperToGm = false }) {
   const effect = aura.effects?.[0];
-  console.debug('[Aura Helper] aura effect', effect);
+  logDebug('aura effect', effect);
   let originUuid =
     effect?.origin ??
     effect?.sourceId ??
@@ -205,7 +255,7 @@ async function handleAura({ token, enemy, aura, message, whisperToGm = false }) 
   let originItem = null;
   if (!originUuid) {
     originItem = enemy.actor.items.find((i) => i.slug === aura.slug) ?? null;
-    console.debug('[Aura Helper] searched enemy items by slug', {
+    logDebug('searched enemy items by slug', {
       slug: aura.slug,
       item: originItem,
     });
@@ -214,7 +264,7 @@ async function handleAura({ token, enemy, aura, message, whisperToGm = false }) 
       originItem = enemy.actor.items.find(
         (i) => i.name.toLowerCase() === searchName.toLowerCase()
       );
-      console.debug('[Aura Helper] searched enemy items by name', {
+      logDebug('searched enemy items by name', {
         search: searchName,
         item: originItem,
       });
@@ -227,12 +277,12 @@ async function handleAura({ token, enemy, aura, message, whisperToGm = false }) 
       });
     }
   }
-  console.debug('[Aura Helper] resolved originUuid', originUuid);
+  logDebug('resolved originUuid', originUuid);
   const origin = originItem ?? (originUuid ? await fromUuid(originUuid) : null);
   const auraName = origin?.name ?? aura.slug;
   const auraLink = originUuid ? `@UUID[${originUuid}]{${auraName}}` : auraName;
   const content = message(auraLink);
-  console.debug('[Aura Helper] creating chat message', content);
+  logDebug('creating chat message', content);
   const speaker = ChatMessage.getSpeaker({
     token: token.document,
     actor: token.actor,
@@ -252,18 +302,18 @@ async function handleAura({ token, enemy, aura, message, whisperToGm = false }) 
 
 Hooks.on('pf2e.startTurn', async (combatant) => {
   if (game.user.isGM) return;
-  console.debug('[Aura Helper] pf2e.startTurn', { combatant });
+  logDebug('pf2e.startTurn', { combatant });
   const token = combatant.token?.object ?? combatant.token;
   if (!isResponsibleOwnerClient(token)) return;
   const auraChecks = getStandardAuraChecks(token);
-  console.debug(
-    '[Aura Helper] standard aura sources in scene',
+  logDebug(
+    'standard aura sources in scene',
     auraChecks.map(({ source, aura }) => `${source.name}:${aura.slug}`)
   );
 
   for (const { source, aura } of auraChecks) {
     const distance = canvas.grid.measureDistance(token, source);
-    console.debug('[Aura Helper] evaluating aura', {
+    logDebug('evaluating aura', {
       source: source.name,
       aura: aura.slug,
       distance,
@@ -284,6 +334,7 @@ Hooks.on('pf2e.startTurn', async (combatant) => {
 });
 
 Hooks.on('updateToken', async (tokenDoc, change, _options, _userId) => {
+  logInfo('updateToken received', { tokenId: tokenDoc.id, change });
   if (game.user.isGM) return;
   if (change.x === undefined && change.y === undefined) return;
   const token = tokenDoc.object;
