@@ -40,7 +40,16 @@ function isSettingExplicitlyConfigured(settingKey) {
   const storage = game.settings.storage.get(definition.scope);
   if (!storage) return false;
 
-  return storage.has(getSettingStorageKey(settingKey));
+  const fullSettingKey = getSettingStorageKey(settingKey);
+  if (typeof storage.has === 'function') {
+    return storage.has(fullSettingKey);
+  }
+
+  if (typeof storage.get === 'function') {
+    return storage.get(fullSettingKey) !== undefined;
+  }
+
+  return false;
 }
 
 function getLogLevel() {
