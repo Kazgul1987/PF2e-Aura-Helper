@@ -22,12 +22,14 @@ const SETTING_LOG_LEVEL = 'logLevel';
 const SETTING_REQUIRE_VISIBLE_ENEMIES = 'requireVisibleEnemies';
 const SETTING_PUBLIC_CHAT_MESSAGES = 'publicChatMessages';
 const SETTING_INCLUDE_ALLIED_AURAS = 'includeAlliedAuras';
+const SETTING_DEBUG_AURA_TRAIT_SCAN = 'debugAuraTraitScan';
 const SETTINGS_KEY_PREFIX = `${MODULE_ID}.`;
 const LOG_LEVELS = {
   OFF: 'off',
   INFO: 'info',
   DEBUG: 'debug',
 };
+const loggedAuraTraitScanByCombat = new Set();
 
 function getSettingStorageKey(settingKey) {
   return `${SETTINGS_KEY_PREFIX}${settingKey}`;
@@ -85,6 +87,10 @@ function shouldWhisperToGm() {
 
 function shouldIncludeAlliedAuras() {
   return game.settings.get(MODULE_ID, SETTING_INCLUDE_ALLIED_AURAS);
+}
+
+function shouldLogAuraTraitScan() {
+  return game.settings.get(MODULE_ID, SETTING_DEBUG_AURA_TRAIT_SCAN);
 }
 
 function getChatDeliveryTargets(whisperToGm) {
@@ -361,6 +367,53 @@ function getNpcAuraTraitItems(sourceToken) {
   return items.filter((item) => isAuraTraitItemActive(item) && itemHasAuraTrait(item));
 }
 
+function logCombatNpcAuraTraitSummary(combat = game.combat) {
+  if (!combat) return;
+  if (getLogLevel() !== LOG_LEVELS.DEBUG) return;
+  if (!shouldLogAuraTraitScan()) return;
+
+  const combatants = combat.combatants ?? [];
+  const summary = [];
+
+  for (const combatant of combatants) {
+    const token = combatant.token?.object ?? combatant.token ?? canvas.tokens?.get(combatant.tokenId) ?? null;
+    const actor = token?.actor ?? combatant.actor ?? null;
+    if (!actor || actor.type !== 'npc') continue;
+
+    const auraItems = getNpcAuraTraitItems({ actor });
+    const auraItemSummaries = auraItems.map((item) => ({
+      name: item.name,
+      slug: item.slug ?? null,
+      uuid: item.uuid ?? null,
+      radius: getAuraRadiusFromItem(item),
+    }));
+
+    summary.push({
+      npcName: token?.name ?? actor.name,
+      auraTraitItemCount: auraItemSummaries.length,
+      auraTraitItems: auraItemSummaries,
+    });
+  }
+
+  logDebug('Combat NPC Aura-Trait summary', {
+    combatId: combat.id ?? null,
+    combatName: combat.name ?? null,
+    npcCount: summary.length,
+    npcs: summary,
+  });
+}
+
+function logCombatNpcAuraTraitSummaryOnce(combat = game.combat, trigger = 'unknown') {
+  if (!combat?.id) return;
+  if (loggedAuraTraitScanByCombat.has(combat.id)) return;
+  loggedAuraTraitScanByCombat.add(combat.id);
+  logDebug('running combat aura-trait diagnostic scan', {
+    combatId: combat.id,
+    trigger,
+  });
+  logCombatNpcAuraTraitSummary(combat);
+}
+
 function getOriginItemFromAuraIdentifier(sourceToken, auraIdentifier) {
   if (!sourceToken?.actor || !auraIdentifier) return null;
   if (!String(auraIdentifier).startsWith('trait-item:')) return null;
@@ -518,6 +571,15 @@ Hooks.once('init', () => {
   game.settings.register(MODULE_ID, SETTING_INCLUDE_ALLIED_AURAS, {
     name: 'Also check allied auras',
     hint: 'If enabled, aura reminders also trigger for allied tokens, not only enemies.',
+    scope: 'world',
+    config: true,
+    type: Boolean,
+    default: false,
+  });
+
+  game.settings.register(MODULE_ID, SETTING_DEBUG_AURA_TRAIT_SCAN, {
+    name: 'Debug: Log NPC aura-trait scan at combat start',
+    hint: 'When enabled (and log level is Debug), prints a structured list of NPC aura-trait items at combat start/first turn.',
     scope: 'world',
     config: true,
     type: Boolean,
@@ -953,6 +1015,8 @@ async function checkAllCurrentAuraOccupancy({ eventKind = AURA_EVENT_KINDS.ENTER
 }
 
 Hooks.on('pf2e.startTurn', async (combatant) => {
+  logCombatNpcAuraTraitSummaryOnce(game.combat, 'pf2e.startTurn');
+
   const token = combatant.token?.object ?? combatant.token;
   const activeCombatant = game.combat?.combatant ?? null;
   const activeTokenId = activeCombatant?.tokenId ?? activeCombatant?.token?.id ?? null;
@@ -1046,6 +1110,15 @@ Hooks.on('pf2e.startTurn', async (combatant) => {
 
   wasInAura.set(token.id, currentSet);
 
+});
+
+Hooks.on('combatStart', (combat) => {
+  logCombatNpcAuraTraitSummaryOnce(combat, 'combatStart');
+});
+
+Hooks.on('deleteCombat', (combat) => {
+  if (!combat?.id) return;
+  loggedAuraTraitScanByCombat.delete(combat.id);
 });
 
 Hooks.on('updateToken', async (tokenDoc, change, _options, userId) => {
