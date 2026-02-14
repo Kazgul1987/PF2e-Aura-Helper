@@ -308,16 +308,16 @@ function normalizeAuraTargetToken(target) {
   if (!target) return null;
   if (target.documentName === 'Token') return target;
   if (target.document?.documentName === 'Token') return target.document;
-  return target;
+  return null;
 }
 
 function buildAuraTargetAtCenter(target, center) {
   const tokenDoc = normalizeAuraTargetToken(target);
   if (!tokenDoc || center?.x === undefined || center?.y === undefined) return tokenDoc;
   const tokenObject = tokenDoc.object;
-  const gridSize = canvas.grid?.size ?? 0;
-  const widthPx = tokenObject?.w ?? (tokenDoc.width ?? 1) * gridSize;
-  const heightPx = tokenObject?.h ?? (tokenDoc.height ?? 1) * gridSize;
+  const sizePx = canvas.grid?.size ?? canvas.dimensions?.size ?? 0;
+  const widthPx = tokenObject?.w ?? (tokenDoc.width ?? 1) * sizePx;
+  const heightPx = tokenObject?.h ?? (tokenDoc.height ?? 1) * sizePx;
   if (!widthPx || !heightPx) return tokenDoc;
   const x = center.x - widthPx / 2;
   const y = center.y - heightPx / 2;
@@ -330,7 +330,16 @@ function auraContainsToken(aura, target, options = {}) {
     ? buildAuraTargetAtCenter(target, options.center)
     : normalizeAuraTargetToken(target);
   if (!auraTarget) return false;
-  return !!aura.containsToken(auraTarget);
+  try {
+    return !!aura.containsToken(auraTarget);
+  } catch (error) {
+    logDebug('aura.containsToken failed', {
+      auraSlug: aura.slug,
+      tokenId: auraTarget.id ?? null,
+      error,
+    });
+    return false;
+  }
 }
 
 function gmIds() {
@@ -539,6 +548,14 @@ Hooks.on('updateToken', async (tokenDoc, change, _options, userId) => {
       for (const { source, aura } of auraChecks) {
         const key = `${source.id}-${aura.slug}`;
         const isInside = auraContainsToken(aura, tokenDoc, { center: startPoint });
+        logDebug('standard aura movement start check', {
+          tokenId: token.id,
+          tokenName: token.name,
+          sourceId: source.id,
+          sourceName: source.name,
+          auraSlug: aura.slug,
+          containsToken: isInside,
+        });
         startMap.set(key, isInside);
         if (isInside) {
           occupancyMap.set(key, true);
@@ -629,6 +646,14 @@ Hooks.on('updateToken', async (tokenDoc, change, _options, userId) => {
       if (!aura) continue;
       const key = `${source.id}-winter-sleet`;
       const startedInside = auraContainsToken(aura, tokenDoc, { center: startPoint });
+      logDebug('winter sleet movement start check', {
+        tokenId: token.id,
+        tokenName: token.name,
+        sourceId: source.id,
+        sourceName: source.name,
+        auraSlug: aura.slug,
+        containsToken: startedInside,
+      });
       startMap.set(key, startedInside);
       if (startedInside) {
         wsOccupancyMap.set(key, true);
