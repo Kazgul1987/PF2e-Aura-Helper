@@ -90,32 +90,20 @@ function isPrimaryActiveGm() {
   return activeGms[0].id === game.user.id;
 }
 
-function isDuplicateAuraEvent(payload) {
+function isDuplicate(cache, payload) {
   const key = getAuraEventKey(payload);
   const now = Date.now();
-  for (const [cachedKey, expiresAt] of recentAuraEvents) {
-    if (expiresAt <= now) recentAuraEvents.delete(cachedKey);
+  for (const [cachedKey, expiresAt] of cache) {
+    if (expiresAt <= now) cache.delete(cachedKey);
   }
-  const cached = recentAuraEvents.get(key);
+  const cached = cache.get(key);
   if (cached && cached > now) return true;
-  recentAuraEvents.set(key, now + AURA_EVENT_TTL_MS);
-  return false;
-}
-
-function isDuplicateEmitterAuraEvent(payload) {
-  const key = getAuraEventKey(payload);
-  const now = Date.now();
-  for (const [cachedKey, expiresAt] of recentEmitterAuraEvents) {
-    if (expiresAt <= now) recentEmitterAuraEvents.delete(cachedKey);
-  }
-  const cached = recentEmitterAuraEvents.get(key);
-  if (cached && cached > now) return true;
-  recentEmitterAuraEvents.set(key, now + AURA_EVENT_TTL_MS);
+  cache.set(key, now + AURA_EVENT_TTL_MS);
   return false;
 }
 
 function emitAuraEvent(payload) {
-  if (isDuplicateEmitterAuraEvent(payload)) {
+  if (isDuplicate(recentEmitterAuraEvents, payload)) {
     logDebug('skip duplicate emit (local)', {
       eventKind: payload.eventKind,
       tokenId: payload.tokenId,
@@ -141,6 +129,15 @@ function emitAuraEvent(payload) {
   game.socket.emit(`module.${MODULE_ID}`, payload);
 }
 
+function resolveAuraFromSource(sourceToken, auraSlug) {
+  if (!sourceToken?.actor?.auras) return null;
+  const directAura = sourceToken.actor.auras.get(auraSlug);
+  if (directAura) return directAura;
+
+  const auras = [...sourceToken.actor.auras.values()];
+  return auras.find((aura) => aura.slug === auraSlug) ?? null;
+}
+
 Hooks.once('ready', () => {
   game.socket.on(`module.${MODULE_ID}`, async (payload) => {
     if (!payload) return;
@@ -153,7 +150,7 @@ Hooks.once('ready', () => {
     ) {
       return;
     }
-    if (isDuplicateAuraEvent(payload)) {
+    if (isDuplicate(recentAuraEvents, payload)) {
       logDebug('skip duplicate incoming aura event', {
         eventKind: payload.eventKind,
         tokenId: payload.tokenId,
@@ -187,7 +184,7 @@ Hooks.once('ready', () => {
     }
 
     if (!token?.actor || !enemy?.actor) return;
-    const aura = enemy?.actor?.auras?.get(payload.auraSlug);
+    const aura = resolveAuraFromSource(enemy, payload.auraSlug);
     if (!token || !enemy || !aura) return;
 
     await handleAura({
@@ -235,7 +232,7 @@ Hooks.once('init', () => {
     scope: 'world',
     config: true,
     type: Boolean,
-    default: true,
+    default: false,
   });
 
   game.settings.register(MODULE_ID, SETTING_PUBLIC_CHAT_MESSAGES, {
@@ -500,6 +497,35 @@ async function handleAura({ token, enemy, aura, message, whisperToGm = false }) 
   }
 }
 
+async function checkAllCurrentAuraOccupancy({ eventKind = AURA_EVENT_KINDS.ENTER } = {}) {
+  const tokens = canvas.tokens?.placeables ?? [];
+  if (tokens.length === 0) return;
+
+  const activeCombatTokenId = game.combat?.combatant?.tokenId ?? null;
+  for (const token of tokens) {
+    if (!isCombatRelevantToken(token)) continue;
+
+    const currentHits = getCurrentStandardAuraHits(token);
+    const currentSet = new Set(currentHits.map(({ auraKey }) => auraKey));
+    wasInAura.set(token.id, currentSet);
+
+    if (eventKind === AURA_EVENT_KINDS.START_TURN && token.id !== activeCombatTokenId) continue;
+
+    for (const { source, aura } of currentHits) {
+      emitAuraEvent({
+        type: AURA_EVENT_TYPE,
+        eventKind,
+        tokenId: token.id,
+        enemyId: source.id,
+        auraSlug: aura.slug,
+        combatId: game.combat?.id ?? null,
+        round: game.combat?.round ?? 0,
+        turn: game.combat?.turn ?? 0,
+      });
+    }
+  }
+}
+
 Hooks.on('pf2e.startTurn', async (combatant) => {
   const token = combatant.token?.object ?? combatant.token;
   logDebug('hook entry', {
@@ -730,9 +756,10 @@ Hooks.on('deleteToken', (tokenDoc) => {
   tokenMovementSequence.delete(tokenDoc.id);
 });
 
-Hooks.on('canvasReady', () => {
+Hooks.on('canvasReady', async () => {
   movementStarts.clear();
   currentAuraOccupancy.clear();
   wasInAura.clear();
   tokenMovementSequence.clear();
+  await checkAllCurrentAuraOccupancy({ eventKind: AURA_EVENT_KINDS.START_TURN });
 });
