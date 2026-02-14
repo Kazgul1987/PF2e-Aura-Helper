@@ -1,5 +1,6 @@
 const movementStarts = new Map();
 const currentAuraOccupancy = new Map();
+const wasInAura = new Map();
 const recentAuraEvents = new Map();
 const recentEmitterAuraEvents = new Map();
 
@@ -328,6 +329,28 @@ function getStandardAuraChecks(activeToken) {
   return checks;
 }
 
+function isTokenInsideAura(token, source, aura) {
+  if (typeof aura?.containsToken === 'function') {
+    return aura.containsToken(token);
+  }
+
+  const distance = canvas.grid.measureDistance(token.center, source.center);
+  return distance <= aura.radius;
+}
+
+function getCurrentStandardAuraHits(token) {
+  const auraChecks = getStandardAuraChecks(token);
+  const hits = [];
+
+  for (const { source, aura } of auraChecks) {
+    if (!isTokenInsideAura(token, source, aura)) continue;
+    const auraKey = `${source.id}-${aura.slug}`;
+    hits.push({ auraKey, source, aura });
+  }
+
+  return hits;
+}
+
 function gmIds() {
   return game.users.filter((u) => u.isGM).map((u) => u.id);
 }
@@ -434,13 +457,14 @@ Hooks.on('pf2e.startTurn', async (combatant) => {
     });
     return;
   }
-  const auraChecks = getStandardAuraChecks(token);
+  const currentHits = getCurrentStandardAuraHits(token);
+  const currentSet = new Set(currentHits.map(({ auraKey }) => auraKey));
   logDebug(
     'standard aura sources in scene',
-    auraChecks.map(({ source, aura }) => `${source.name}:${aura.slug}`)
+    currentHits.map(({ source, aura }) => `${source.name}:${aura.slug}`)
   );
 
-  for (const { source, aura } of auraChecks) {
+  for (const { source, aura } of currentHits) {
     const distance = canvas.grid.measureDistance(token, source);
     logDebug('evaluating aura', {
       source: source.name,
@@ -473,6 +497,8 @@ Hooks.on('pf2e.startTurn', async (combatant) => {
       turn,
     });
   }
+
+  wasInAura.set(token.id, currentSet);
 
 });
 
@@ -507,98 +533,45 @@ Hooks.on('updateToken', async (tokenDoc, change, _options, userId) => {
     });
     return;
   }
-  const auraChecks = getStandardAuraChecks(token);
-  let occupancyMap = currentAuraOccupancy.get(token.id) ?? new Map();
+  const currentHits = getCurrentStandardAuraHits(token);
+  const currentSet = new Set(currentHits.map(({ auraKey }) => auraKey));
+  const prevSet = wasInAura.get(token.id) ?? new Set();
+  const entered = [...currentSet].filter((auraKey) => !prevSet.has(auraKey));
 
-  if (token._movement) {
-    if (!movementStarts.has(token.id)) {
-      const processedKeys = new Set();
-      const startPoint =
-        token._movement?.rays?.[0]?.A ??
-        token._movement?.ray?.A ?? {
-          x: token.center.x,
-          y: token.center.y,
-        };
-      const startMap = new Map();
-      occupancyMap = currentAuraOccupancy.get(token.id) ?? new Map();
-      for (const { source, aura } of auraChecks) {
-        const key = `${source.id}-${aura.slug}`;
-        const distance = canvas.grid.measureDistance(startPoint, source.center);
-        const isInside = distance <= aura.radius;
-        startMap.set(key, isInside);
-        if (isInside) {
-          occupancyMap.set(key, true);
-        } else {
-          occupancyMap.delete(key);
-        }
-        processedKeys.add(key);
-      }
-      for (const key of [...occupancyMap.keys()]) {
-        if (!processedKeys.has(key)) occupancyMap.delete(key);
-      }
-      if (occupancyMap.size > 0) {
-        currentAuraOccupancy.set(token.id, occupancyMap);
-      } else {
-        currentAuraOccupancy.delete(token.id);
-      }
-      movementStarts.set(token.id, startMap);
+  if (entered.length > 0) {
+    const currentByKey = new Map(currentHits.map((hit) => [hit.auraKey, hit]));
+    for (const auraKey of entered) {
+      const hit = currentByKey.get(auraKey);
+      if (!hit) continue;
+      const { source, aura } = hit;
+      const round = game.combat?.round ?? 0;
+      const turn = game.combat?.turn ?? 0;
+      const distance = canvas.grid.measureDistance(token, source);
+      logDebug('Aura detected (enter)', {
+        tokenId: token.id,
+        tokenName: token.name,
+        sourceId: source.id,
+        sourceName: source.name,
+        auraSlug: aura.slug,
+        distance,
+        radius: aura.radius,
+        round,
+        turn,
+      });
+      emitAuraEvent({
+        type: AURA_EVENT_TYPE,
+        eventKind: AURA_EVENT_KINDS.ENTER,
+        tokenId: token.id,
+        enemyId: source.id,
+        auraSlug: aura.slug,
+        combatId: game.combat?.id ?? null,
+        round,
+        turn,
+      });
     }
-    return;
   }
 
-  const standardStartMap = movementStarts.get(token.id) ?? new Map();
-  movementStarts.delete(token.id);
-  occupancyMap = currentAuraOccupancy.get(token.id) ?? new Map();
-  const processedKeys = new Set();
-  for (const { source, aura } of auraChecks) {
-    const key = `${source.id}-${aura.slug}`;
-    processedKeys.add(key);
-    const previousInside =
-      (standardStartMap.has(key) ? standardStartMap.get(key) : occupancyMap.get(key)) ?? false;
-    // Einmalige Distanzmessung für die Auswertung von isInside.
-    const newDistance = canvas.grid.measureDistance(token.center, source.center);
-    const isInside = newDistance <= aura.radius;
-    if (isInside) {
-      if (!previousInside) {
-        const round = game.combat?.round ?? 0;
-        const turn = game.combat?.turn ?? 0;
-        logDebug('Aura detected (enter)', {
-          tokenId: token.id,
-          tokenName: token.name,
-          sourceId: source.id,
-          sourceName: source.name,
-          auraSlug: aura.slug,
-          distance: newDistance,
-          radius: aura.radius,
-          round,
-          turn,
-        });
-        emitAuraEvent({
-          type: AURA_EVENT_TYPE,
-          eventKind: AURA_EVENT_KINDS.ENTER,
-          tokenId: token.id,
-          enemyId: source.id,
-          auraSlug: aura.slug,
-          combatId: game.combat?.id ?? null,
-          round,
-          turn,
-        });
-      }
-      occupancyMap.set(key, true);
-    } else if (occupancyMap.get(key)) {
-      occupancyMap.delete(key);
-    }
-  }
-  for (const key of [...occupancyMap.keys()]) {
-    if (!processedKeys.has(key)) {
-      occupancyMap.delete(key);
-    }
-  }
-  if (occupancyMap.size > 0) {
-    currentAuraOccupancy.set(token.id, occupancyMap);
-  } else {
-    currentAuraOccupancy.delete(token.id);
-  }
+  wasInAura.set(token.id, currentSet);
 
   const winterSleetSources = getWinterSleetSources();
   if (winterSleetSources.length === 0) return;
@@ -685,9 +658,11 @@ Hooks.on('updateToken', async (tokenDoc, change, _options, userId) => {
 Hooks.on('deleteToken', (tokenDoc) => {
   movementStarts.delete(tokenDoc.id);
   currentAuraOccupancy.delete(tokenDoc.id);
+  wasInAura.delete(tokenDoc.id);
 });
 
 Hooks.on('canvasReady', () => {
   movementStarts.clear();
   currentAuraOccupancy.clear();
+  wasInAura.clear();
 });
