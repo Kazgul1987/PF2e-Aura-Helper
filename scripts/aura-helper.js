@@ -83,7 +83,9 @@ function nextTokenMovementSequence(tokenId) {
 
 function isPrimaryActiveGm() {
   if (!game.user.isGM) return false;
-  const activeGms = game.users.filter((user) => user.isGM && user.active);
+  const activeGms = game.users
+    .filter((user) => user.isGM && user.active)
+    .sort((a, b) => a.id.localeCompare(b.id));
   if (activeGms.length === 0) return true;
   return activeGms[0].id === game.user.id;
 }
