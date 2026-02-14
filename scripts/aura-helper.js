@@ -397,40 +397,19 @@ function getClassDcFromActor(actor) {
   return classDC - 2;
 }
 function isResponsiblePosterForToken(token) {
-  const actor = token?.actor;
-  if (!actor) return false;
-
-  const primaryUpdaterId = actor.primaryUpdater?.id ?? null;
-  if (primaryUpdaterId) {
-    return primaryUpdaterId === game.user.id;
-  }
-
-  const ownerLevel = CONST.DOCUMENT_OWNERSHIP_LEVELS.OWNER;
-  const activeNonGmOwnerIds = Object.entries(actor.ownership ?? {})
-    .filter(([id, level]) => {
-      if (id === 'default') return false;
-      if (level < ownerLevel) return false;
-      const user = game.users.get(id);
-      return !!user?.active && !user.isGM;
-    })
-    .map(([id]) => id)
-    .sort((leftId, rightId) => leftId.localeCompare(rightId));
-
-  if (activeNonGmOwnerIds.length === 0) {
-    return game.user.isGM;
-  }
-
-  return activeNonGmOwnerIds[0] === game.user.id;
+  if (!token?.actor) return false;
+  return isPrimaryActiveGm();
 }
 
 async function createWinterSleetChatMessage({ token, source, whisperToGm = false }) {
   if (!token?.actor || !source?.actor) return;
   if (!isResponsiblePosterForToken(token)) {
-    logDebug('skip winter sleet chat message: not primary updater', {
+    logDebug('skip winter sleet chat message', {
+      reason: 'emitter/poster mismatch',
       tokenId: token.id,
       tokenName: token.name,
       currentUserId: game.user.id,
-      primaryUpdaterId: token.actor.primaryUpdater?.id ?? null,
+      isPrimaryActiveGm: isPrimaryActiveGm(),
     });
     return;
   }
@@ -675,7 +654,7 @@ function isEmitterForTokenChange(token, userId) {
     return userId === game.user.id;
   }
 
-  return isResponsiblePosterForToken(token);
+  return isPrimaryActiveGm();
 }
 
 function getDocumentAtMovementStart(token) {
@@ -694,11 +673,12 @@ function getDocumentAtMovementStart(token) {
 
 async function handleAura({ token, enemy, aura, auraIdentifier, message, whisperToGm = false }) {
   if (!isResponsiblePosterForToken(token)) {
-    logDebug('skip standard aura chat message: not primary updater', {
+    logDebug('skip standard aura chat message', {
+      reason: 'emitter/poster mismatch',
       tokenId: token?.id ?? null,
       tokenName: token?.name ?? null,
       currentUserId: game.user.id,
-      primaryUpdaterId: token?.actor?.primaryUpdater?.id ?? null,
+      isPrimaryActiveGm: isPrimaryActiveGm(),
     });
     return;
   }
