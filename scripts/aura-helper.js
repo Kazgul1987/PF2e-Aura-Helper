@@ -21,15 +21,35 @@ const SETTING_DEBUG_ENABLED = 'debugEnabled';
 const SETTING_LOG_LEVEL = 'logLevel';
 const SETTING_REQUIRE_VISIBLE_ENEMIES = 'requireVisibleEnemies';
 const SETTING_PUBLIC_CHAT_MESSAGES = 'publicChatMessages';
+const SETTINGS_KEY_PREFIX = `${MODULE_ID}.`;
 const LOG_LEVELS = {
   OFF: 'off',
   INFO: 'info',
   DEBUG: 'debug',
 };
 
+function getSettingStorageKey(settingKey) {
+  return `${SETTINGS_KEY_PREFIX}${settingKey}`;
+}
+
+function isSettingExplicitlyConfigured(settingKey) {
+  const definition = game.settings.settings.get(getSettingStorageKey(settingKey));
+  if (!definition) return false;
+
+  const storage = game.settings.storage.get(definition.scope);
+  if (!storage) return false;
+
+  return storage.has(getSettingStorageKey(settingKey));
+}
+
 function getLogLevel() {
+  const hasExplicitLogLevel = isSettingExplicitlyConfigured(SETTING_LOG_LEVEL);
   const configuredLogLevel = game.settings.get(MODULE_ID, SETTING_LOG_LEVEL);
-  if (Object.values(LOG_LEVELS).includes(configuredLogLevel)) return configuredLogLevel;
+
+  if (hasExplicitLogLevel && Object.values(LOG_LEVELS).includes(configuredLogLevel)) {
+    return configuredLogLevel;
+  }
+
   const debugEnabled = game.settings.get(MODULE_ID, SETTING_DEBUG_ENABLED);
   return debugEnabled ? LOG_LEVELS.DEBUG : LOG_LEVELS.OFF;
 }
@@ -139,6 +159,13 @@ function resolveAuraFromSource(sourceToken, auraSlug) {
 }
 
 Hooks.once('ready', () => {
+  if (
+    game.settings.get(MODULE_ID, SETTING_DEBUG_ENABLED) === true &&
+    !isSettingExplicitlyConfigured(SETTING_LOG_LEVEL)
+  ) {
+    game.settings.set(MODULE_ID, SETTING_LOG_LEVEL, LOG_LEVELS.DEBUG);
+  }
+
   game.socket.on(`module.${MODULE_ID}`, async (payload) => {
     if (!payload) return;
 
@@ -204,8 +231,8 @@ Hooks.once('init', () => {
   patchChatMessageUserAlias();
 
   game.settings.register(MODULE_ID, SETTING_DEBUG_ENABLED, {
-    name: 'Enable debug logging',
-    hint: 'Activates detailed debug logging for PF2e Aura Helper.',
+    name: 'Enable debug logging (Legacy fallback)',
+    hint: 'Legacy option used only if Log level has never been explicitly set.',
     scope: 'client',
     config: true,
     type: Boolean,
