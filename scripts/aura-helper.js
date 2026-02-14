@@ -108,7 +108,6 @@ function emitAuraEvent(payload) {
 
 Hooks.once('ready', () => {
   game.socket.on(`module.${MODULE_ID}`, async (payload) => {
-    if (!game.user.isGM) return;
     if (!payload) return;
 
     if (payload.type !== AURA_EVENT_TYPE) return;
@@ -119,11 +118,22 @@ Hooks.once('ready', () => {
     ) {
       return;
     }
-    if (isDuplicateAuraEvent(payload)) return;
+    if (isDuplicateAuraEvent(payload)) {
+      logDebug('skip duplicate incoming aura event', {
+        eventKind: payload.eventKind,
+        tokenId: payload.tokenId,
+        enemyId: payload.enemyId,
+        auraSlug: payload.auraSlug,
+        combatId: payload.combatId,
+        round: payload.round,
+        turn: payload.turn,
+      });
+      return;
+    }
 
     const token = canvas.tokens.get(payload.tokenId);
     const enemy = canvas.tokens.get(payload.enemyId);
-    logDebug('Aura event received (gm)', {
+    logDebug('Aura event received', {
       eventKind: payload.eventKind,
       tokenId: payload.tokenId,
       tokenName: token?.name ?? null,
@@ -208,8 +218,22 @@ function getClassDcFromActor(actor) {
   return classDC - 2;
 }
 
+function isPrimaryUpdaterForToken(token) {
+  const actor = token?.actor;
+  return !!actor && actor.primaryUpdater === game.user;
+}
+
 async function createWinterSleetChatMessage({ token, source, whisperToGm = false }) {
   if (!token?.actor || !source?.actor) return;
+  if (!isPrimaryUpdaterForToken(token)) {
+    logDebug('skip winter sleet chat message: not primary updater', {
+      tokenId: token.id,
+      tokenName: token.name,
+      currentUserId: game.user.id,
+      primaryUpdaterId: token.actor.primaryUpdater?.id ?? null,
+    });
+    return;
+  }
   const stance = source.actor.items.find((item) => item.slug === WINTER_SLEET_STANCE_SLUG);
   const sourceName = stance?.name ?? 'Winter Sleet';
   const sourceLink = stance?.uuid ? `@UUID[${stance.uuid}]{${sourceName}}` : sourceName;
@@ -308,22 +332,6 @@ function gmIds() {
   return game.users.filter((u) => u.isGM).map((u) => u.id);
 }
 
-function isResponsibleOwnerClient(token) {
-  if (!token?.actor || game.user.isGM) return false;
-  if (!token.actor.testUserPermission(game.user, 'OWNER')) return false;
-
-  const ownership = token.actor.ownership ?? {};
-  const ownerUsers = game.users.filter((user) => {
-    if (user.isGM || !user.active) return false;
-    const level = ownership[user.id] ?? ownership.default ?? 0;
-    return level >= CONST.DOCUMENT_OWNERSHIP_LEVELS.OWNER;
-  });
-
-  if (ownerUsers.length === 0) return true;
-  ownerUsers.sort((a, b) => a.id.localeCompare(b.id));
-  return ownerUsers[0].id === game.user.id;
-}
-
 function isEmitterForTokenChange(token, userId) {
   if (!token?.actor) return false;
 
@@ -331,15 +339,19 @@ function isEmitterForTokenChange(token, userId) {
     return userId === game.user.id;
   }
 
-  if (token.actor.hasPlayerOwner) {
-    if (!game.user.active) return false;
-    return token.actor.testUserPermission(game.user, 'OWNER');
-  }
-
-  return game.user.isGM;
+  return isPrimaryUpdaterForToken(token);
 }
 
 async function handleAura({ token, enemy, aura, message, whisperToGm = false }) {
+  if (!isPrimaryUpdaterForToken(token)) {
+    logDebug('skip standard aura chat message: not primary updater', {
+      tokenId: token?.id ?? null,
+      tokenName: token?.name ?? null,
+      currentUserId: game.user.id,
+      primaryUpdaterId: token?.actor?.primaryUpdater?.id ?? null,
+    });
+    return;
+  }
   const effect = aura.effects?.[0];
   logDebug('aura effect', effect);
   let originUuid =
