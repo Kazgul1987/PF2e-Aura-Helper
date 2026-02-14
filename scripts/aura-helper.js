@@ -480,6 +480,13 @@ function getOriginItemFromAuraIdentifier(sourceToken, auraIdentifier) {
   return sourceToken.actor.items.find((item) => item.uuid === itemUuid) ?? null;
 }
 
+function isAuraSuppressed({ targetToken, sourceToken, auraIdentifier }) {
+  const targetActorUuid = targetToken?.actor?.uuid;
+  const sourceActorUuid = sourceToken?.actor?.uuid;
+  const map = game.settings.get(MODULE_ID, 'suppressionMap') || {};
+  return !!map[targetActorUuid]?.[sourceActorUuid]?.[auraIdentifier];
+}
+
 async function handleIncomingAuraEvent(payload) {
   if (!payload) return;
 
@@ -541,8 +548,24 @@ async function handleIncomingAuraEvent(payload) {
   }
 
   if (!token?.actor || !enemy?.actor) return;
-  const aura = resolveAuraFromSource(enemy, payload.auraSlug, payload.auraIdentifier);
-  const originItem = getOriginItemFromAuraIdentifier(enemy, payload.auraIdentifier);
+  const auraIdentifier = payload.auraIdentifier || payload.auraSlug;
+  if (
+    (payload.eventKind === AURA_EVENT_KINDS.START_TURN || payload.eventKind === AURA_EVENT_KINDS.ENTER) &&
+    isAuraSuppressed({ targetToken: token, sourceToken: enemy, auraIdentifier })
+  ) {
+    logDebug('suppressed aura chat', {
+      eventKind: payload.eventKind,
+      tokenId: token.id,
+      tokenName: token.name,
+      sourceId: enemy.id,
+      sourceName: enemy.name,
+      auraIdentifier,
+    });
+    return;
+  }
+
+  const aura = resolveAuraFromSource(enemy, payload.auraSlug, auraIdentifier);
+  const originItem = getOriginItemFromAuraIdentifier(enemy, auraIdentifier);
   const resolvedAura = aura ?? (originItem ? buildTraitAuraFromItem(originItem) : null);
   if (!token || !enemy || !resolvedAura) return;
 
@@ -550,7 +573,7 @@ async function handleIncomingAuraEvent(payload) {
     token,
     enemy,
     aura: resolvedAura,
-    auraIdentifier: payload.auraIdentifier,
+    auraIdentifier,
     originItem,
     message: (auraLink) =>
       payload.eventKind === AURA_EVENT_KINDS.START_TURN
