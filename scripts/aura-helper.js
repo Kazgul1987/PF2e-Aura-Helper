@@ -438,6 +438,26 @@ function getTokenRoleLabel(token) {
   return isPartyMemberActor(token?.actor) ? 'PC' : 'NPC';
 }
 
+function getTokenDisposition(token) {
+  return token?.document?.disposition ?? token?.actor?.prototypeToken?.disposition ?? null;
+}
+
+function isEnemyTokenForAura(candidate, activeToken) {
+  if (!candidate?.actor || !activeToken?.actor) return false;
+
+  if (candidate.actor.isEnemyOf(activeToken.actor)) return true;
+
+  const candidateAlliance = candidate.actor.alliance ?? null;
+  const activeAlliance = activeToken.actor.alliance ?? null;
+  if (candidateAlliance !== null && activeAlliance !== null) return false;
+
+  const candidateDisposition = getTokenDisposition(candidate);
+  const activeDisposition = getTokenDisposition(activeToken);
+  if (candidateDisposition === null || activeDisposition === null) return false;
+
+  return candidateDisposition !== activeDisposition;
+}
+
 function getStandardAuraSources(activeToken) {
   if (!activeToken?.actor) return [];
 
@@ -446,7 +466,7 @@ function getStandardAuraSources(activeToken) {
   const includeAlliedAuras = shouldIncludeAlliedAuras();
   return canvas.tokens.placeables.filter((candidate) => {
     if (!isCombatRelevantToken(candidate)) return false;
-    const isEnemyAura = candidate.actor.isEnemyOf(activeToken.actor);
+    const isEnemyAura = isEnemyTokenForAura(candidate, activeToken);
     if (!isEnemyAura && !includeAlliedAuras) return false;
 
     if (requireVisibleEnemies && isActivePartyMember && isEnemyAura) {
@@ -506,7 +526,7 @@ function getStandardAuraChecks(activeToken) {
 
     for (const { containerKey, auras } of auraContainers) {
       for (const aura of auras) {
-        if (!aura?.slug || typeof aura.containsToken !== 'function') {
+        if (!aura?.slug) {
           logDebug('skip invalid aura object', {
             sourceId: source.id,
             sourceName: source.name,
@@ -530,11 +550,36 @@ function getStandardAuraChecks(activeToken) {
   return checks;
 }
 
-function isTokenInsideAura(aura, tokenLike) {
-  if (!aura || typeof aura.containsToken !== 'function' || !tokenLike) return false;
+function getCenterForTokenLike(tokenLike) {
+  if (!tokenLike) return null;
+  if (tokenLike.center) return tokenLike.center;
+
+  const document = tokenLike.document ?? tokenLike;
+  if (document?.x === undefined || document?.y === undefined) return null;
+
+  const gridSize = canvas.grid?.size ?? 1;
+  const width = (document.width ?? tokenLike.w ?? 1) * gridSize;
+  const height = (document.height ?? tokenLike.h ?? 1) * gridSize;
+  return {
+    x: document.x + width / 2,
+    y: document.y + height / 2,
+  };
+}
+
+function isTokenInsideAura(aura, source, tokenLike) {
+  if (!aura || !source || !tokenLike) return false;
+
+  const auraRadius = Number(aura.radius);
+  const tokenCenter = getCenterForTokenLike(tokenLike);
+  const sourceCenter = getCenterForTokenLike(source);
+  if (Number.isFinite(auraRadius) && tokenCenter && sourceCenter) {
+    const distance = canvas.grid.measureDistance(tokenCenter, sourceCenter);
+    return distance <= auraRadius;
+  }
+
+  if (typeof aura.containsToken !== 'function') return false;
   const tokenOrDocument = tokenLike.document ?? tokenLike;
   if (!tokenOrDocument) return false;
-
   return !!aura.containsToken(tokenOrDocument);
 }
 
@@ -543,7 +588,7 @@ function getCurrentStandardAuraHits(token) {
   const hits = [];
 
   for (const { source, aura } of auraChecks) {
-    if (!isTokenInsideAura(aura, token)) continue;
+    if (!isTokenInsideAura(aura, source, token)) continue;
     const auraKey = `${source.id}-${aura.slug}`;
     hits.push({ auraKey, source, aura });
   }
@@ -730,7 +775,7 @@ Hooks.on('pf2e.startTurn', async (combatant) => {
   );
 
   for (const { source, aura } of currentHits) {
-    const inside = isTokenInsideAura(aura, token);
+    const inside = isTokenInsideAura(aura, source, token);
     logDebug('evaluating aura', {
       source: source.name,
       aura: aura.slug,
@@ -810,7 +855,7 @@ Hooks.on('updateToken', async (tokenDoc, change, _options, userId) => {
       const { source, aura } = hit;
       const round = game.combat?.round ?? 0;
       const turn = game.combat?.turn ?? 0;
-      const inside = isTokenInsideAura(aura, token);
+      const inside = isTokenInsideAura(aura, source, token);
       const roleLabel = getTokenRoleLabel(token);
       logDebug(`${roleLabel} ${token.name} betritt Aura ${aura.slug} von Token ${source.name}.`);
       logDebug('Aura detected (enter)', {
@@ -856,7 +901,7 @@ Hooks.on('updateToken', async (tokenDoc, change, _options, userId) => {
       const aura = source.actor.auras?.get(WINTER_SLEET_AURA_SLUG);
       if (!aura) continue;
       const key = `${source.id}-winter-sleet`;
-      const startedInside = isTokenInsideAura(aura, movementStartDocument);
+      const startedInside = isTokenInsideAura(aura, source, movementStartDocument);
       startMap.set(key, startedInside);
       if (startedInside) {
         wsOccupancyMap.set(key, true);
@@ -885,7 +930,7 @@ Hooks.on('updateToken', async (tokenDoc, change, _options, userId) => {
     const key = `${source.id}-winter-sleet`;
     const previousInside =
       (startMap.has(key) ? startMap.get(key) : wsOccupancyMap.get(key)) ?? false;
-    const isInside = isTokenInsideAura(aura, token);
+    const isInside = isTokenInsideAura(aura, source, token);
     const shouldTrigger =
       (!previousInside && isInside) ||
       (WINTER_SLEET_TRIGGER_ON_MOVE_WITHIN && previousInside && isInside);
