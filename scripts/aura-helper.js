@@ -327,8 +327,13 @@ Hooks.once('ready', () => {
     game.settings.set(MODULE_ID, SETTING_LOG_LEVEL, LOG_LEVELS.DEBUG);
   }
 
+  const whisperToGm = shouldWhisperToGm();
+  const activeChatChannel = whisperToGm ? 'GM-Whisper (nur Spielleitung)' : 'Öffentlicher Chat (alle Spieler)';
+
+  logInfo(`Aktiver Chat-Kanal für Aura-Nachrichten: ${activeChatChannel}`);
+
   logInfo('Aura helper mode active', {
-    chatOutput: shouldWhisperToGm() ? 'GM-Whisper' : 'Öffentlich',
+    chatOutput: activeChatChannel,
     auraFilter: shouldIncludeAlliedAuras() ? 'Feindliche + verbündete Auren' : 'Nur feindliche Auren',
     visibilityFilter: shouldRequireVisibleEnemies() ? 'aktiv' : 'inaktiv',
   });
@@ -372,8 +377,8 @@ Hooks.once('init', () => {
   });
 
   game.settings.register(MODULE_ID, SETTING_PUBLIC_CHAT_MESSAGES, {
-    name: 'Send aura chat messages publicly',
-    hint: 'If enabled, aura reminders are posted to public chat instead of GM whisper.',
+    name: 'Post aura reminders in public chat (instead of GM whisper)',
+    hint: 'If disabled, only GMs see aura reminders as a whisper.',
     scope: 'world',
     config: true,
     type: Boolean,
