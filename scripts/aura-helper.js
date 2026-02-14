@@ -461,10 +461,69 @@ function getStandardAuraChecks(activeToken) {
   const sources = getStandardAuraSources(activeToken);
   const checks = [];
 
+  const auraContainerCandidates = [
+    { key: 'actor.auras', resolver: (source) => source.actor?.auras },
+    { key: 'token.document.actor.auras', resolver: (source) => source.document?.actor?.auras },
+    { key: 'token.document.auras', resolver: (source) => source.document?.auras },
+    { key: 'token.auras', resolver: (source) => source.auras },
+  ];
+
+  const extractAuras = (container) => {
+    if (!container) return [];
+    if (typeof container.values === 'function') return [...container.values()];
+    if (Array.isArray(container)) return container;
+    if (typeof container === 'object') return Object.values(container);
+    return [];
+  };
+
+  const getSourceContainerAuras = (source) => {
+    const primaryAuras = extractAuras(source.actor?.auras);
+    if (primaryAuras.length > 0) {
+      return [{ containerKey: 'actor.auras', auras: primaryAuras }];
+    }
+
+    const fallbackContainers = [];
+    for (const candidate of auraContainerCandidates) {
+      if (candidate.key === 'actor.auras') continue;
+      const auras = extractAuras(candidate.resolver(source));
+      if (auras.length === 0) continue;
+      fallbackContainers.push({ containerKey: candidate.key, auras });
+    }
+
+    return fallbackContainers;
+  };
+
   for (const source of sources) {
-    const auras = source.actor?.auras ? [...source.actor.auras.values()] : [];
-    for (const aura of auras) {
-      checks.push({ source, aura });
+    const auraContainers = getSourceContainerAuras(source);
+    logDebug('resolved aura containers for source', {
+      sourceId: source.id,
+      sourceName: source.name,
+      containers: auraContainers.map(({ containerKey, auras }) => ({
+        container: containerKey,
+        auraCount: auras.length,
+      })),
+    });
+
+    for (const { containerKey, auras } of auraContainers) {
+      for (const aura of auras) {
+        if (!aura?.slug || typeof aura.containsToken !== 'function') {
+          logDebug('skip invalid aura object', {
+            sourceId: source.id,
+            sourceName: source.name,
+            container: containerKey,
+            aura,
+          });
+          continue;
+        }
+
+        checks.push({ source, aura });
+        logDebug('queued aura check', {
+          sourceId: source.id,
+          sourceName: source.name,
+          container: containerKey,
+          auraSlug: aura.slug,
+        });
+      }
     }
   }
 
