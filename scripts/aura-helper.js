@@ -219,6 +219,39 @@ function getClassDcFromActor(actor) {
   return classDC - 2;
 }
 
+function getMeasurementPoint(pointLike) {
+  if (pointLike?.center) return pointLike.center;
+  return pointLike;
+}
+
+function measureGridDistance(a, b) {
+  const from = getMeasurementPoint(a);
+  const to = getMeasurementPoint(b);
+  if (!from || !to) return Number.POSITIVE_INFINITY;
+
+  const path = canvas.grid.measurePath([from, to], { gridSpaces: true });
+  const directDistance =
+    path?.distance ??
+    path?.totalDistance ??
+    path?.cost ??
+    path?.totalCost ??
+    path?.spaces ??
+    path?.totalSpaces;
+
+  if (Number.isFinite(directDistance)) return directDistance;
+
+  if (Array.isArray(path?.segments)) {
+    const segmentedDistance = path.segments.reduce((sum, segment) => {
+      const segmentValue =
+        segment?.distance ?? segment?.cost ?? segment?.spaces ?? segment?.totalDistance;
+      return Number.isFinite(segmentValue) ? sum + segmentValue : sum;
+    }, 0);
+    if (Number.isFinite(segmentedDistance) && segmentedDistance > 0) return segmentedDistance;
+  }
+
+  return Number.POSITIVE_INFINITY;
+}
+
 function isPrimaryUpdaterForToken(token) {
   const actor = token?.actor;
   return !!actor && actor.primaryUpdater === game.user;
@@ -334,7 +367,7 @@ function isTokenInsideAura(token, source, aura) {
     return aura.containsToken(token);
   }
 
-  const distance = canvas.grid.measureDistance(token.center, source.center);
+  const distance = measureGridDistance(token.center, source.center);
   return distance <= aura.radius;
 }
 
@@ -465,7 +498,7 @@ Hooks.on('pf2e.startTurn', async (combatant) => {
   );
 
   for (const { source, aura } of currentHits) {
-    const distance = canvas.grid.measureDistance(token, source);
+    const distance = measureGridDistance(token.center, source.center);
     logDebug('evaluating aura', {
       source: source.name,
       aura: aura.slug,
@@ -546,7 +579,7 @@ Hooks.on('updateToken', async (tokenDoc, change, _options, userId) => {
       const { source, aura } = hit;
       const round = game.combat?.round ?? 0;
       const turn = game.combat?.turn ?? 0;
-      const distance = canvas.grid.measureDistance(token, source);
+      const distance = measureGridDistance(token.center, source.center);
       logDebug('Aura detected (enter)', {
         tokenId: token.id,
         tokenName: token.name,
@@ -590,7 +623,7 @@ Hooks.on('updateToken', async (tokenDoc, change, _options, userId) => {
       const aura = source.actor.auras?.get(WINTER_SLEET_AURA_SLUG);
       if (!aura) continue;
       const key = `${source.id}-winter-sleet`;
-      const startDistance = canvas.grid.measureDistance(startPoint, source.center);
+      const startDistance = measureGridDistance(startPoint, source.center);
       const startedInside = startDistance <= aura.radius;
       startMap.set(key, startedInside);
       if (startedInside) {
@@ -620,7 +653,7 @@ Hooks.on('updateToken', async (tokenDoc, change, _options, userId) => {
     const key = `${source.id}-winter-sleet`;
     const previousInside =
       (startMap.has(key) ? startMap.get(key) : wsOccupancyMap.get(key)) ?? false;
-    const distance = canvas.grid.measureDistance(token.center, source.center);
+    const distance = measureGridDistance(token.center, source.center);
     const isInside = distance <= aura.radius;
     const shouldTrigger =
       (!previousInside && isInside) ||
