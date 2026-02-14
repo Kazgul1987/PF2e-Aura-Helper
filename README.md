@@ -10,6 +10,7 @@ Dieses Foundry VTT Modul erinnert Spieler daran, wenn sie ihren Zug in einer fei
 
 ## Einstellungen
 
+- **Log level**: Für detaillierte Debug-Ausgaben muss der Wert explizit auf **Debug** gesetzt werden (Legacy-Fallback: **Enable debug logging (Legacy fallback)** nur für bestehende Installationen ohne gesetzten Log-Level).
 - **Only trigger visible enemy auras** (Standard: aktiviert): Aura-Trigger werden nur für Gegner ausgelöst, die für die Gruppe sichtbar sind.
 - **Send aura chat messages publicly** (Standard: deaktiviert): Aura-Nachrichten werden öffentlich im Chat gepostet statt nur an die Spielleitung geflüstert.
 
