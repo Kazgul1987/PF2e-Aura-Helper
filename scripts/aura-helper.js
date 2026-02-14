@@ -905,6 +905,23 @@ function isEmitterForTokenChange(token, userId) {
   return isPrimaryActiveGm();
 }
 
+function shouldEmitFromMoveTokenHook() {
+  if (game.user.isGM) return isPrimaryActiveGm();
+  const hasActiveGm = game.users.some((user) => user.isGM && user.active);
+  return !hasActiveGm;
+}
+
+function getMovementEventSequence(tokenId, movement, operation) {
+  return (
+    operation?.id ??
+    operation?._id ??
+    movement?.id ??
+    movement?._id ??
+    movement?.operationId ??
+    nextTokenMovementSequence(tokenId)
+  );
+}
+
 function getDocumentAtMovementStart(token) {
   if (!token?.document || !token._movement) return null;
 
@@ -1179,49 +1196,6 @@ Hooks.on('updateToken', async (tokenDoc, change, _options, userId) => {
     return;
   }
   const movementSequence = nextTokenMovementSequence(token.id);
-  const currentHits = getCurrentStandardAuraHits(token);
-  const currentSet = new Set(currentHits.map(({ auraKey }) => auraKey));
-  const prevSet = wasInAura.get(token.id) ?? new Set();
-  const entered = [...currentSet].filter((auraKey) => !prevSet.has(auraKey));
-
-  if (entered.length > 0) {
-    const currentByKey = new Map(currentHits.map((hit) => [hit.auraKey, hit]));
-    for (const auraKey of entered) {
-      const hit = currentByKey.get(auraKey);
-      if (!hit) continue;
-      const { source, aura, auraIdentifier } = hit;
-      const round = game.combat?.round ?? 0;
-      const turn = game.combat?.turn ?? 0;
-      const inside = isTokenInsideAura(aura, source, token);
-      const roleLabel = getTokenRoleLabel(token);
-      logDebug(`${roleLabel} ${token.name} betritt Aura ${aura.slug ?? auraIdentifier} (${auraIdentifier}) von Token ${source.name}.`);
-      logDebug('Aura detected (enter)', {
-        tokenId: token.id,
-        tokenName: token.name,
-        sourceId: source.id,
-        sourceName: source.name,
-        auraSlug: aura.slug,
-        auraIdentifier,
-        inside,
-        round,
-        turn,
-      });
-      emitAuraEvent({
-        type: AURA_EVENT_TYPE,
-        eventKind: AURA_EVENT_KINDS.ENTER,
-        tokenId: token.id,
-        enemyId: source.id,
-        auraSlug: aura.slug ?? auraIdentifier,
-        auraIdentifier,
-        combatId: game.combat?.id ?? null,
-        round,
-        turn,
-        eventSequence: movementSequence,
-      });
-    }
-  }
-
-  wasInAura.set(token.id, currentSet);
 
   const winterSleetSources = getWinterSleetSources();
   if (winterSleetSources.length === 0) return;
@@ -1302,6 +1276,69 @@ Hooks.on('updateToken', async (tokenDoc, change, _options, userId) => {
   }
 
 
+});
+
+Hooks.on('moveToken', (token, movement, operation) => {
+  if (!token?.actor) return;
+
+  logDebug('hook entry', {
+    hookType: 'moveToken',
+    tokenName: token?.name ?? null,
+    isGM: game.user.isGM,
+  });
+
+  const isEmitter = shouldEmitFromMoveTokenHook();
+  logDebug('emitter check', {
+    hookType: 'moveToken',
+    userId: game.user.id,
+    userName: game.user.name,
+    isGm: game.user.isGM,
+    tokenId: token?.id ?? null,
+    tokenName: token?.name ?? null,
+    isEmitterForMoveToken: isEmitter,
+  });
+  if (!isEmitter) return;
+
+  const currentHits = getCurrentStandardAuraHits(token);
+  const currentSet = new Set(currentHits.map((hit) => hit.auraKey));
+  const prevSet = wasInAura.get(token.id) ?? new Set();
+  const entered = [...currentSet].filter((auraKey) => !prevSet.has(auraKey));
+  logDebug('moveToken aura diff', {
+    tokenId: token.id,
+    tokenName: token.name,
+    prevSetSize: prevSet.size,
+    currentSetSize: currentSet.size,
+    entered,
+  });
+
+  if (entered.length > 0) {
+    const currentByKey = new Map(currentHits.map((hit) => [hit.auraKey, hit]));
+    const movementSequence = getMovementEventSequence(token.id, movement, operation);
+
+    for (const auraKey of entered) {
+      const hit = currentByKey.get(auraKey);
+      if (!hit) continue;
+
+      const { source, aura, auraIdentifier } = hit;
+      const round = game.combat?.round ?? 0;
+      const turn = game.combat?.turn ?? 0;
+
+      emitAuraEvent({
+        type: AURA_EVENT_TYPE,
+        eventKind: AURA_EVENT_KINDS.ENTER,
+        tokenId: token.id,
+        enemyId: source.id,
+        auraSlug: aura.slug ?? auraIdentifier,
+        auraIdentifier,
+        combatId: game.combat?.id ?? null,
+        round,
+        turn,
+        eventSequence: movementSequence,
+      });
+    }
+  }
+
+  wasInAura.set(token.id, currentSet);
 });
 
 Hooks.on('deleteToken', (tokenDoc) => {
