@@ -160,6 +160,7 @@ function emitAuraEvent(payload) {
       tokenId: payload.tokenId,
       enemyId: payload.enemyId,
       auraSlug: payload.auraSlug,
+      auraIdentifier: payload.auraIdentifier,
       combatId: payload.combatId,
       round: payload.round,
       turn: payload.turn,
@@ -172,6 +173,7 @@ function emitAuraEvent(payload) {
     tokenId: payload.tokenId,
     enemyId: payload.enemyId,
     auraSlug: payload.auraSlug,
+    auraIdentifier: payload.auraIdentifier,
     combatId: payload.combatId,
     round: payload.round,
     turn: payload.turn,
@@ -184,13 +186,74 @@ function emitAuraEvent(payload) {
   handleIncomingAuraEvent(payload);
 }
 
-function resolveAuraFromSource(sourceToken, auraSlug) {
+function normalizeAuraString(value) {
+  if (typeof value !== 'string') return null;
+  const normalized = value.trim();
+  return normalized.length > 0 ? normalized : null;
+}
+
+function buildAuraIdentifier(aura, containerAuraKey) {
+  const directSlug = normalizeAuraString(aura?.slug);
+  if (directSlug) return directSlug;
+
+  const mappedKey = normalizeAuraString(containerAuraKey);
+  if (mappedKey) return mappedKey;
+
+  const effect = aura?.effects?.[0];
+  const effectSlug = normalizeAuraString(effect?.slug);
+  if (effectSlug) return effectSlug;
+
+  const effectUuid =
+    normalizeAuraString(effect?.uuid) ??
+    normalizeAuraString(effect?.origin) ??
+    normalizeAuraString(effect?.sourceId) ??
+    normalizeAuraString(effect?.system?.context?.origin?.uuid);
+  if (effectUuid) return effectUuid;
+
+  const fallbackName = normalizeAuraString(aura?.name) ?? 'unnamed-aura';
+  const fallbackRadius = Number.isFinite(Number(aura?.radius)) ? Number(aura.radius) : 'unknown-radius';
+  return `name:${fallbackName}|radius:${fallbackRadius}`;
+}
+
+function getAuraEntriesFromContainer(container) {
+  if (!container) return [];
+
+  if (typeof container.entries === 'function') {
+    return [...container.entries()];
+  }
+
+  if (Array.isArray(container)) {
+    return container.map((aura, index) => [String(index), aura]);
+  }
+
+  if (typeof container === 'object') {
+    return Object.entries(container);
+  }
+
+  return [];
+}
+
+function resolveAuraFromSource(sourceToken, auraSlug, auraIdentifier) {
   if (!sourceToken?.actor?.auras) return null;
-  const directAura = sourceToken.actor.auras.get(auraSlug);
+  const directAura = auraSlug ? sourceToken.actor.auras.get(auraSlug) : null;
   if (directAura) return directAura;
 
-  const auras = [...sourceToken.actor.auras.values()];
-  return auras.find((aura) => aura.slug === auraSlug) ?? null;
+  if (auraIdentifier) {
+    const keyedAura = sourceToken.actor.auras.get(auraIdentifier);
+    if (keyedAura) return keyedAura;
+  }
+
+  const auraEntries = getAuraEntriesFromContainer(sourceToken.actor.auras);
+  if (auraIdentifier) {
+    for (const [containerAuraKey, aura] of auraEntries) {
+      if (buildAuraIdentifier(aura, containerAuraKey) === auraIdentifier) {
+        return aura;
+      }
+    }
+  }
+
+  if (!auraSlug) return null;
+  return auraEntries.find(([, aura]) => aura?.slug === auraSlug)?.[1] ?? null;
 }
 
 async function handleIncomingAuraEvent(payload) {
@@ -210,6 +273,7 @@ async function handleIncomingAuraEvent(payload) {
       tokenId: payload.tokenId,
       enemyId: payload.enemyId,
       auraSlug: payload.auraSlug,
+      auraIdentifier: payload.auraIdentifier,
       combatId: payload.combatId,
       round: payload.round,
       turn: payload.turn,
@@ -226,6 +290,7 @@ async function handleIncomingAuraEvent(payload) {
     sourceId: payload.enemyId,
     sourceName: enemy?.name ?? null,
     auraSlug: payload.auraSlug,
+    auraIdentifier: payload.auraIdentifier,
     round: payload.round,
     turn: payload.turn,
   });
@@ -238,13 +303,14 @@ async function handleIncomingAuraEvent(payload) {
   }
 
   if (!token?.actor || !enemy?.actor) return;
-  const aura = resolveAuraFromSource(enemy, payload.auraSlug);
+  const aura = resolveAuraFromSource(enemy, payload.auraSlug, payload.auraIdentifier);
   if (!token || !enemy || !aura) return;
 
   await handleAura({
     token,
     enemy,
     aura,
+    auraIdentifier: payload.auraIdentifier,
     message: (auraLink) =>
       payload.eventKind === AURA_EVENT_KINDS.START_TURN
         ? `${token.name} beginnt seinen Zug innerhalb der Aura ${auraLink} von ${enemy.name}.`
@@ -494,26 +560,18 @@ function getStandardAuraChecks(activeToken) {
     { key: 'token.auras', resolver: (source) => source.auras },
   ];
 
-  const extractAuras = (container) => {
-    if (!container) return [];
-    if (typeof container.values === 'function') return [...container.values()];
-    if (Array.isArray(container)) return container;
-    if (typeof container === 'object') return Object.values(container);
-    return [];
-  };
-
   const getSourceContainerAuras = (source) => {
-    const primaryAuras = extractAuras(source.actor?.auras);
-    if (primaryAuras.length > 0) {
-      return [{ containerKey: 'actor.auras', auras: primaryAuras }];
+    const primaryAuraEntries = getAuraEntriesFromContainer(source.actor?.auras);
+    if (primaryAuraEntries.length > 0) {
+      return [{ containerKey: 'actor.auras', auraEntries: primaryAuraEntries }];
     }
 
     const fallbackContainers = [];
     for (const candidate of auraContainerCandidates) {
       if (candidate.key === 'actor.auras') continue;
-      const auras = extractAuras(candidate.resolver(source));
-      if (auras.length === 0) continue;
-      fallbackContainers.push({ containerKey: candidate.key, auras });
+      const auraEntries = getAuraEntriesFromContainer(candidate.resolver(source));
+      if (auraEntries.length === 0) continue;
+      fallbackContainers.push({ containerKey: candidate.key, auraEntries });
     }
 
     return fallbackContainers;
@@ -524,30 +582,34 @@ function getStandardAuraChecks(activeToken) {
     logDebug('resolved aura containers for source', {
       sourceId: source.id,
       sourceName: source.name,
-      containers: auraContainers.map(({ containerKey, auras }) => ({
+      containers: auraContainers.map(({ containerKey, auraEntries }) => ({
         container: containerKey,
-        auraCount: auras.length,
+        auraCount: auraEntries.length,
       })),
     });
 
-    for (const { containerKey, auras } of auraContainers) {
-      for (const aura of auras) {
-        if (!aura?.slug) {
+    for (const { containerKey, auraEntries } of auraContainers) {
+      for (const [containerAuraKey, aura] of auraEntries) {
+        const auraIdentifier = buildAuraIdentifier(aura, containerAuraKey);
+        if (!auraIdentifier) {
           logDebug('skip invalid aura object', {
             sourceId: source.id,
             sourceName: source.name,
             container: containerKey,
+            containerAuraKey,
             aura,
           });
           continue;
         }
 
-        checks.push({ source, aura });
+        checks.push({ source, aura, auraIdentifier });
         logDebug('queued aura check', {
           sourceId: source.id,
           sourceName: source.name,
           container: containerKey,
+          containerAuraKey,
           auraSlug: aura.slug,
+          auraIdentifier,
         });
       }
     }
@@ -593,10 +655,10 @@ function getCurrentStandardAuraHits(token) {
   const auraChecks = getStandardAuraChecks(token);
   const hits = [];
 
-  for (const { source, aura } of auraChecks) {
+  for (const { source, aura, auraIdentifier } of auraChecks) {
     if (!isTokenInsideAura(aura, source, token)) continue;
-    const auraKey = `${source.id}-${aura.slug}`;
-    hits.push({ auraKey, source, aura });
+    const auraKey = `${source.id}-${auraIdentifier}`;
+    hits.push({ auraKey, source, aura, auraIdentifier });
   }
 
   return hits;
@@ -630,7 +692,7 @@ function getDocumentAtMovementStart(token) {
   return token.document.clone({ x, y }, { keepId: true });
 }
 
-async function handleAura({ token, enemy, aura, message, whisperToGm = false }) {
+async function handleAura({ token, enemy, aura, auraIdentifier, message, whisperToGm = false }) {
   if (!isResponsiblePosterForToken(token)) {
     logDebug('skip standard aura chat message: not primary updater', {
       tokenId: token?.id ?? null,
@@ -650,12 +712,20 @@ async function handleAura({ token, enemy, aura, message, whisperToGm = false }) 
   let originItem = null;
   if (!originUuid) {
     originItem = enemy.actor.items.find((i) => i.slug === aura.slug) ?? null;
+    if (!originItem && auraIdentifier) {
+      originItem = enemy.actor.items.find((i) => i.slug === auraIdentifier) ?? null;
+      logDebug('searched enemy items by fallback identifier', {
+        auraIdentifier,
+        item: originItem,
+      });
+    }
     logDebug('searched enemy items by slug', {
       slug: aura.slug,
       item: originItem,
     });
     if (!originItem) {
-      const searchName = effect?.name ?? aura.slug.replace(/-/g, ' ');
+      const fallbackSlug = aura.slug ?? auraIdentifier ?? 'unknown-aura';
+      const searchName = effect?.name ?? fallbackSlug.replace(/-/g, ' ');
       originItem = enemy.actor.items.find(
         (i) => i.name.toLowerCase() === searchName.toLowerCase()
       );
@@ -668,13 +738,14 @@ async function handleAura({ token, enemy, aura, message, whisperToGm = false }) 
     if (!originItem) {
       console.warn('[Aura Helper] no matching item found for aura', {
         aura: aura.slug,
+        auraIdentifier,
         enemy: enemy.name,
       });
     }
   }
   logDebug('resolved originUuid', originUuid);
   const origin = originItem ?? (originUuid ? await fromUuid(originUuid) : null);
-  const auraName = origin?.name ?? aura.slug;
+  const auraName = origin?.name ?? aura.slug ?? auraIdentifier ?? 'Unbekannte Aura';
   const auraLink = originUuid ? `@UUID[${originUuid}]{${auraName}}` : auraName;
   const content = message(auraLink);
   logDebug('creating chat message', content);
@@ -691,6 +762,7 @@ async function handleAura({ token, enemy, aura, message, whisperToGm = false }) 
     sourceId: enemy.id,
     sourceName: enemy.name,
     auraSlug: aura.slug,
+    auraIdentifier,
   });
   await ChatMessage.create({
     content,
@@ -700,6 +772,7 @@ async function handleAura({ token, enemy, aura, message, whisperToGm = false }) 
   if (!origin) {
     console.warn('[Aura Helper] no item to post for aura', {
       aura: aura.slug,
+      auraIdentifier,
       enemy: enemy.name,
     });
   }
@@ -719,13 +792,14 @@ async function checkAllCurrentAuraOccupancy({ eventKind = AURA_EVENT_KINDS.ENTER
 
     if (eventKind === AURA_EVENT_KINDS.START_TURN && token.id !== activeCombatTokenId) continue;
 
-    for (const { source, aura } of currentHits) {
+    for (const { source, aura, auraIdentifier } of currentHits) {
       emitAuraEvent({
         type: AURA_EVENT_TYPE,
         eventKind,
         tokenId: token.id,
         enemyId: source.id,
-        auraSlug: aura.slug,
+        auraSlug: aura.slug ?? auraIdentifier,
+        auraIdentifier,
         combatId: game.combat?.id ?? null,
         round: game.combat?.round ?? 0,
         turn: game.combat?.turn ?? 0,
@@ -767,7 +841,7 @@ Hooks.on('pf2e.startTurn', async (combatant) => {
   const roleLabel = getTokenRoleLabel(token);
   logDebug(`${roleLabel} ${token?.name ?? 'Unbekannt'} ist am Zug.`);
   if (currentHits.length > 0) {
-    const auraSummaries = currentHits.map(({ source, aura }) => `${aura.slug} von ${source.name}`);
+    const auraSummaries = currentHits.map(({ source, aura, auraIdentifier }) => `${aura.slug ?? auraIdentifier} (${auraIdentifier}) von ${source.name}`);
     logDebug(
       `${roleLabel} ${token?.name ?? 'Unbekannt'} steht in den folgenden Auren von folgenden Tokens: ${auraSummaries.join(', ')}`
     );
@@ -777,10 +851,10 @@ Hooks.on('pf2e.startTurn', async (combatant) => {
 
   logDebug(
     'standard aura sources in scene',
-    currentHits.map(({ source, aura }) => `${source.name}:${aura.slug}`)
+    currentHits.map(({ source, aura, auraIdentifier }) => `${source.name}:${aura.slug ?? auraIdentifier} (${auraIdentifier})`)
   );
 
-  for (const { source, aura } of currentHits) {
+  for (const { source, aura, auraIdentifier } of currentHits) {
     const inside = isTokenInsideAura(aura, source, token);
     logDebug('evaluating aura', {
       source: source.name,
@@ -796,6 +870,7 @@ Hooks.on('pf2e.startTurn', async (combatant) => {
       sourceId: source.id,
       sourceName: source.name,
       auraSlug: aura.slug,
+      auraIdentifier,
       inside,
       round,
       turn,
@@ -805,7 +880,8 @@ Hooks.on('pf2e.startTurn', async (combatant) => {
       eventKind: AURA_EVENT_KINDS.START_TURN,
       tokenId: token.id,
       enemyId: source.id,
-      auraSlug: aura.slug,
+      auraSlug: aura.slug ?? auraIdentifier,
+      auraIdentifier,
       combatId: game.combat?.id ?? null,
       round,
       turn,
@@ -858,18 +934,19 @@ Hooks.on('updateToken', async (tokenDoc, change, _options, userId) => {
     for (const auraKey of entered) {
       const hit = currentByKey.get(auraKey);
       if (!hit) continue;
-      const { source, aura } = hit;
+      const { source, aura, auraIdentifier } = hit;
       const round = game.combat?.round ?? 0;
       const turn = game.combat?.turn ?? 0;
       const inside = isTokenInsideAura(aura, source, token);
       const roleLabel = getTokenRoleLabel(token);
-      logDebug(`${roleLabel} ${token.name} betritt Aura ${aura.slug} von Token ${source.name}.`);
+      logDebug(`${roleLabel} ${token.name} betritt Aura ${aura.slug ?? auraIdentifier} (${auraIdentifier}) von Token ${source.name}.`);
       logDebug('Aura detected (enter)', {
         tokenId: token.id,
         tokenName: token.name,
         sourceId: source.id,
         sourceName: source.name,
         auraSlug: aura.slug,
+        auraIdentifier,
         inside,
         round,
         turn,
@@ -879,7 +956,8 @@ Hooks.on('updateToken', async (tokenDoc, change, _options, userId) => {
         eventKind: AURA_EVENT_KINDS.ENTER,
         tokenId: token.id,
         enemyId: source.id,
-        auraSlug: aura.slug,
+        auraSlug: aura.slug ?? auraIdentifier,
+        auraIdentifier,
         combatId: game.combat?.id ?? null,
         round,
         turn,
