@@ -304,6 +304,35 @@ function getStandardAuraChecks(activeToken) {
   return checks;
 }
 
+function normalizeAuraTargetToken(target) {
+  if (!target) return null;
+  if (target.documentName === 'Token') return target;
+  if (target.document?.documentName === 'Token') return target.document;
+  return target;
+}
+
+function buildAuraTargetAtCenter(target, center) {
+  const tokenDoc = normalizeAuraTargetToken(target);
+  if (!tokenDoc || center?.x === undefined || center?.y === undefined) return tokenDoc;
+  const tokenObject = tokenDoc.object;
+  const gridSize = canvas.grid?.size ?? 0;
+  const widthPx = tokenObject?.w ?? (tokenDoc.width ?? 1) * gridSize;
+  const heightPx = tokenObject?.h ?? (tokenDoc.height ?? 1) * gridSize;
+  if (!widthPx || !heightPx) return tokenDoc;
+  const x = center.x - widthPx / 2;
+  const y = center.y - heightPx / 2;
+  return tokenDoc.clone({ x, y }, { keepId: true });
+}
+
+function auraContainsToken(aura, target, options = {}) {
+  if (!aura?.containsToken) return false;
+  const auraTarget = options.center
+    ? buildAuraTargetAtCenter(target, options.center)
+    : normalizeAuraTargetToken(target);
+  if (!auraTarget) return false;
+  return !!aura.containsToken(auraTarget);
+}
+
 function gmIds() {
   return game.users.filter((u) => u.isGM).map((u) => u.id);
 }
@@ -429,14 +458,13 @@ Hooks.on('pf2e.startTurn', async (combatant) => {
   );
 
   for (const { source, aura } of auraChecks) {
-    const distance = canvas.grid.measureDistance(token, source);
+    const containsToken = auraContainsToken(aura, token);
     logDebug('evaluating aura', {
       source: source.name,
       aura: aura.slug,
-      distance,
-      radius: aura.radius,
+      containsToken,
     });
-    if (distance > aura.radius) continue;
+    if (!containsToken) continue;
     const round = game.combat?.round ?? 0;
     const turn = game.combat?.turn ?? 0;
     logDebug('Aura detected (start-turn)', {
@@ -445,8 +473,7 @@ Hooks.on('pf2e.startTurn', async (combatant) => {
       sourceId: source.id,
       sourceName: source.name,
       auraSlug: aura.slug,
-      distance,
-      radius: aura.radius,
+      containsToken,
       round,
       turn,
     });
@@ -511,8 +538,7 @@ Hooks.on('updateToken', async (tokenDoc, change, _options, userId) => {
       occupancyMap = currentAuraOccupancy.get(token.id) ?? new Map();
       for (const { source, aura } of auraChecks) {
         const key = `${source.id}-${aura.slug}`;
-        const distance = canvas.grid.measureDistance(startPoint, source.center);
-        const isInside = distance <= aura.radius;
+        const isInside = auraContainsToken(aura, tokenDoc, { center: startPoint });
         startMap.set(key, isInside);
         if (isInside) {
           occupancyMap.set(key, true);
@@ -543,9 +569,7 @@ Hooks.on('updateToken', async (tokenDoc, change, _options, userId) => {
     processedKeys.add(key);
     const previousInside =
       (standardStartMap.has(key) ? standardStartMap.get(key) : occupancyMap.get(key)) ?? false;
-    // Einmalige Distanzmessung für die Auswertung von isInside.
-    const newDistance = canvas.grid.measureDistance(token.center, source.center);
-    const isInside = newDistance <= aura.radius;
+    const isInside = auraContainsToken(aura, tokenDoc);
     if (isInside) {
       if (!previousInside) {
         const round = game.combat?.round ?? 0;
@@ -556,8 +580,7 @@ Hooks.on('updateToken', async (tokenDoc, change, _options, userId) => {
           sourceId: source.id,
           sourceName: source.name,
           auraSlug: aura.slug,
-          distance: newDistance,
-          radius: aura.radius,
+          containsToken: isInside,
           round,
           turn,
         });
@@ -605,8 +628,7 @@ Hooks.on('updateToken', async (tokenDoc, change, _options, userId) => {
       const aura = source.actor.auras?.get(WINTER_SLEET_AURA_SLUG);
       if (!aura) continue;
       const key = `${source.id}-winter-sleet`;
-      const startDistance = canvas.grid.measureDistance(startPoint, source.center);
-      const startedInside = startDistance <= aura.radius;
+      const startedInside = auraContainsToken(aura, tokenDoc, { center: startPoint });
       startMap.set(key, startedInside);
       if (startedInside) {
         wsOccupancyMap.set(key, true);
@@ -635,8 +657,16 @@ Hooks.on('updateToken', async (tokenDoc, change, _options, userId) => {
     const key = `${source.id}-winter-sleet`;
     const previousInside =
       (startMap.has(key) ? startMap.get(key) : wsOccupancyMap.get(key)) ?? false;
-    const distance = canvas.grid.measureDistance(token.center, source.center);
-    const isInside = distance <= aura.radius;
+    const isInside = auraContainsToken(aura, tokenDoc);
+    logDebug('winter sleet aura check', {
+      tokenId: token.id,
+      tokenName: token.name,
+      sourceId: source.id,
+      sourceName: source.name,
+      auraSlug: aura.slug,
+      previousInside,
+      containsToken: isInside,
+    });
     const shouldTrigger =
       (!previousInside && isInside) ||
       (WINTER_SLEET_TRIGGER_ON_MOVE_WITHIN && previousInside && isInside);
