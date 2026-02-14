@@ -1,41 +1,39 @@
 <section class="aura-helper-tab">
-  {{#if hasCombat}}
-    <header class="aura-helper-tab__header">
-      <p>{{localize "COMBAT.Round"}}: {{round}}</p>
-      <p>{{localize "COMBAT.Turn"}}: {{turn}}</p>
-      <p>Aktive Ziele: {{targetCount}}</p>
-    </header>
-
-    <ol class="aura-helper-tab__combatants">
-      {{#each combatants as |combatant|}}
-        <li class="aura-helper-tab__combatant {{#if combatant.isDefeated}}is-defeated{{/if}}">
-          <label>
-            <input
-              type="checkbox"
-              data-action="toggle-target"
-              data-token-id="{{combatant.tokenId}}"
-              {{#if combatant.isSelected}}checked{{/if}}
-              {{#unless combatant.tokenId}}disabled{{/unless}}
-            />
-            {{combatant.name}}
-          </label>
-
-          {{#if combatant.auras.length}}
-            <ul class="aura-helper-tab__auras">
-              {{#each combatant.auras as |aura|}}
-                <li>
-                  <strong>{{aura.name}}</strong>
-                  {{#if aura.radius}}({{aura.radius}} ft.){{/if}}
-                </li>
-              {{/each}}
-            </ul>
-          {{else}}
-            <p>Keine Auren gefunden.</p>
-          {{/if}}
-        </li>
-      {{/each}}
-    </ol>
+  {{#unless hasCombat}}
+    <p class="aura-helper-tab__empty">Kein aktiver Kampf</p>
   {{else}}
-    <p>Kein aktiver Kampf gefunden.</p>
-  {{/if}}
+    <div class="aura-helper-tab__sources">
+      {{#each sources as |source|}}
+        <article class="aura-helper-tab__source" data-source-uuid="{{source.uuid}}">
+          <h3 class="aura-helper-tab__source-name">{{source.name}}</h3>
+
+          <ul class="aura-helper-tab__auras-list">
+            {{#each source.auras as |aura|}}
+              <li class="aura-helper-tab__aura-item">
+                <div class="aura-helper-tab__aura-label">[{{aura.name}}] ({{aura.identifier}})</div>
+
+                <ul class="aura-helper-tab__targets-list">
+                  {{#each aura.targets as |target|}}
+                    <li class="aura-helper-tab__target-item">
+                      <label class="aura-helper-tab__target-label">
+                        <input
+                          class="aura-helper-tab__target-checkbox"
+                          type="checkbox"
+                          data-target-uuid="{{target.uuid}}"
+                          data-source-uuid="{{source.uuid}}"
+                          data-aura-id="{{aura.id}}"
+                          {{#if target.isSuppressed}}checked{{/if}}
+                        />
+                        <span class="aura-helper-tab__target-name">{{target.name}}</span>
+                      </label>
+                    </li>
+                  {{/each}}
+                </ul>
+              </li>
+            {{/each}}
+          </ul>
+        </article>
+      {{/each}}
+    </div>
+  {{/unless}}
 </section>
