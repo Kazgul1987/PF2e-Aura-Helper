@@ -28,6 +28,33 @@ const LOG_LEVELS = {
   INFO: 'info',
   DEBUG: 'debug',
 };
+let hasShownDebugConsoleFilterHint = false;
+let hasShownReadyDiagnostics = false;
+
+function getDebugState() {
+  const logLevel = getLogLevel();
+  return {
+    moduleId: MODULE_ID,
+    user: {
+      id: game.user?.id ?? null,
+      name: game.user?.name ?? null,
+      isGM: game.user?.isGM ?? false,
+    },
+    logLevel,
+    debugEnabledLegacySetting: game.settings.get(MODULE_ID, SETTING_DEBUG_ENABLED),
+    explicitLogLevelConfigured: isSettingExplicitlyConfigured(SETTING_LOG_LEVEL),
+    note: 'logLevel ist client-scoped und kann je Browser/Client unterschiedlich sein.',
+  };
+}
+
+function maybeLogDebugConsoleFilterHint(logLevel) {
+  if (logLevel !== LOG_LEVELS.DEBUG || hasShownDebugConsoleFilterHint) return;
+  hasShownDebugConsoleFilterHint = true;
+  console.info(
+    '[Aura Helper]',
+    'Debug-Logging ist aktiv. Wenn keine Debug-Ausgaben sichtbar sind, prüfe in DevTools den Console-Level-Filter (z. B. Verbose/Debug).',
+  );
+}
 
 function getSettingStorageKey(settingKey) {
   return `${SETTINGS_KEY_PREFIX}${settingKey}`;
@@ -57,11 +84,14 @@ function getLogLevel() {
   const configuredLogLevel = game.settings.get(MODULE_ID, SETTING_LOG_LEVEL);
 
   if (hasExplicitLogLevel && Object.values(LOG_LEVELS).includes(configuredLogLevel)) {
+    maybeLogDebugConsoleFilterHint(configuredLogLevel);
     return configuredLogLevel;
   }
 
   const debugEnabled = game.settings.get(MODULE_ID, SETTING_DEBUG_ENABLED);
-  return debugEnabled ? LOG_LEVELS.DEBUG : LOG_LEVELS.OFF;
+  const resolvedLevel = debugEnabled ? LOG_LEVELS.DEBUG : LOG_LEVELS.OFF;
+  maybeLogDebugConsoleFilterHint(resolvedLevel);
+  return resolvedLevel;
 }
 
 function logDebug(...args) {
@@ -202,6 +232,27 @@ Hooks.once('ready', () => {
     auraFilter: shouldIncludeAlliedAuras() ? 'Feindliche + verbündete Auren' : 'Nur feindliche Auren',
     visibilityFilter: shouldRequireVisibleEnemies() ? 'aktiv' : 'inaktiv',
   });
+
+  if (!hasShownReadyDiagnostics) {
+    hasShownReadyDiagnostics = true;
+    console.info('[Aura Helper] Diagnostics', {
+      user: {
+        id: game.user?.id ?? null,
+        name: game.user?.name ?? null,
+        isGM: game.user?.isGM ?? false,
+      },
+      logLevel: getLogLevel(),
+      note: 'logLevel ist client-scoped und kann je Browser/Client unterschiedlich sein.',
+    });
+  }
+
+  if (!window.PF2EAuraHelperDebugState) {
+    Object.defineProperty(window, 'PF2EAuraHelperDebugState', {
+      configurable: true,
+      value: () => getDebugState(),
+      writable: false,
+    });
+  }
 
   game.socket.on(`module.${MODULE_ID}`, async (payload) => {
     if (!payload) return;
