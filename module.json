@@ -24,5 +24,8 @@
     "scripts/aura-helper.js",
     "scripts/winter_sleet.js",
     "scripts/aura-sidebar.js"
+  ],
+  "templates": [
+    "templates/aura-helper-tab.hbs"
   ]
 }
