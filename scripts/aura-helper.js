@@ -3,6 +3,7 @@ const currentAuraOccupancy = new Map();
 const wasInAura = new Map();
 const recentAuraEvents = new Map();
 const recentEmitterAuraEvents = new Map();
+const tokenMovementSequence = new Map();
 
 const MODULE_ID = 'pf2e-aura-helper';
 const AURA_EVENT_TYPE = 'AURA_EVENT';
@@ -52,8 +53,22 @@ function shouldWhisperToGm() {
   return !game.settings.get(MODULE_ID, SETTING_PUBLIC_CHAT_MESSAGES);
 }
 
-function getAuraEventKey({ combatId, eventKind, tokenId, enemyId, auraSlug, round, turn }) {
-  return `${combatId ?? 'none'}:${eventKind}:${tokenId}:${enemyId}:${auraSlug}:${round}:${turn}`;
+function getAuraEventKey({ combatId, eventKind, tokenId, enemyId, auraSlug, round, turn, eventSequence }) {
+  return `${combatId ?? 'none'}:${eventKind}:${tokenId}:${enemyId}:${auraSlug}:${round}:${turn}:${eventSequence ?? 'none'}`;
+}
+
+function nextTokenMovementSequence(tokenId) {
+  const current = tokenMovementSequence.get(tokenId) ?? 0;
+  const next = current + 1;
+  tokenMovementSequence.set(tokenId, next);
+  return next;
+}
+
+function isPrimaryActiveGm() {
+  if (!game.user.isGM) return false;
+  const activeGms = game.users.filter((user) => user.isGM && user.active);
+  if (activeGms.length === 0) return true;
+  return activeGms[0].id === game.user.id;
 }
 
 function isDuplicateAuraEvent(payload) {
@@ -310,7 +325,7 @@ function getStandardAuraSources(activeToken) {
       return isVisibleToParty(candidate);
     }
 
-    return candidate.isVisible ?? !candidate.document?.hidden;
+    return true;
   });
 }
 
@@ -361,6 +376,20 @@ function isEmitterForTokenChange(token, userId) {
   }
 
   return isPrimaryUpdaterForToken(token);
+}
+
+function getDocumentAtMovementStart(token) {
+  if (!token?.document || !token._movement) return null;
+
+  const startPoint = token._movement?.rays?.[0]?.A ?? token._movement?.ray?.A;
+  if (!startPoint) return null;
+
+  const width = token.w ?? token.document.width * canvas.grid.size;
+  const height = token.h ?? token.document.height * canvas.grid.size;
+  const x = startPoint.x - width / 2;
+  const y = startPoint.y - height / 2;
+
+  return token.document.clone({ x, y }, { keepId: true });
 }
 
 async function handleAura({ token, enemy, aura, message, whisperToGm = false }) {
@@ -436,7 +465,7 @@ Hooks.on('pf2e.startTurn', async (combatant) => {
     userId: null,
     isGM: game.user.isGM,
   });
-  const isEmitter = isEmitterForTokenChange(token);
+  const isEmitter = isPrimaryActiveGm();
   logDebug('emitter check', {
     hookType: 'startTurn',
     userId: game.user.id,
@@ -449,7 +478,7 @@ Hooks.on('pf2e.startTurn', async (combatant) => {
   if (!isEmitter) {
     logDebug('skip emit: emitter selection denied', {
       hookType: 'pf2e.startTurn',
-      reason: 'Current client is not selected emitter',
+      reason: 'Current client is not selected start-turn emitter',
       tokenId: token?.id ?? null,
       tokenName: token?.name ?? null,
     });
@@ -529,6 +558,7 @@ Hooks.on('updateToken', async (tokenDoc, change, _options, userId) => {
     });
     return;
   }
+  const movementSequence = nextTokenMovementSequence(token.id);
   const currentHits = getCurrentStandardAuraHits(token);
   const currentSet = new Set(currentHits.map(({ auraKey }) => auraKey));
   const prevSet = wasInAura.get(token.id) ?? new Set();
@@ -562,6 +592,7 @@ Hooks.on('updateToken', async (tokenDoc, change, _options, userId) => {
         combatId: game.combat?.id ?? null,
         round,
         turn,
+        eventSequence: movementSequence,
       });
     }
   }
@@ -577,7 +608,7 @@ Hooks.on('updateToken', async (tokenDoc, change, _options, userId) => {
       startMap = new Map();
       movementStarts.set(token.id, startMap);
     }
-    const startPoint = token._movement?.rays?.[0]?.A ?? token._movement?.ray?.A ?? token.center;
+    const movementStartDocument = getDocumentAtMovementStart(token) ?? token.document;
     const wsOccupancyMap = currentAuraOccupancy.get(token.id) ?? new Map();
 
     for (const source of winterSleetSources) {
@@ -585,10 +616,7 @@ Hooks.on('updateToken', async (tokenDoc, change, _options, userId) => {
       const aura = source.actor.auras?.get(WINTER_SLEET_AURA_SLUG);
       if (!aura) continue;
       const key = `${source.id}-winter-sleet`;
-      const movementStartToken = {
-        center: startPoint,
-      };
-      const startedInside = isTokenInsideAura(aura, movementStartToken);
+      const startedInside = isTokenInsideAura(aura, movementStartDocument);
       startMap.set(key, startedInside);
       if (startedInside) {
         wsOccupancyMap.set(key, true);
@@ -632,6 +660,7 @@ Hooks.on('updateToken', async (tokenDoc, change, _options, userId) => {
         combatId: game.combat?.id ?? null,
         round: game.combat?.round ?? 0,
         turn: game.combat?.turn ?? 0,
+        eventSequence: movementSequence,
       });
     }
 
@@ -655,10 +684,12 @@ Hooks.on('deleteToken', (tokenDoc) => {
   movementStarts.delete(tokenDoc.id);
   currentAuraOccupancy.delete(tokenDoc.id);
   wasInAura.delete(tokenDoc.id);
+  tokenMovementSequence.delete(tokenDoc.id);
 });
 
 Hooks.on('canvasReady', () => {
   movementStarts.clear();
   currentAuraOccupancy.clear();
   wasInAura.clear();
+  tokenMovementSequence.clear();
 });
