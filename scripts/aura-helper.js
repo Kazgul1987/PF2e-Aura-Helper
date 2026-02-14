@@ -256,6 +256,119 @@ function resolveAuraFromSource(sourceToken, auraSlug, auraIdentifier) {
   return auraEntries.find(([, aura]) => aura?.slug === auraSlug)?.[1] ?? null;
 }
 
+function getArrayFromUnknown(value) {
+  if (Array.isArray(value)) return value;
+  if (typeof value === 'string') return [value];
+  if (value instanceof Set) return [...value];
+  if (value && typeof value === 'object') {
+    if (Array.isArray(value.value)) return value.value;
+    if (Array.isArray(value.values)) return value.values;
+  }
+  return [];
+}
+
+function itemHasAuraTrait(item) {
+  if (!item) return false;
+
+  const traitSources = [
+    item.system?.traits?.value,
+    item.system?.traits?.values,
+    item.system?.traits,
+    item.system?.trait,
+    item.traits,
+    item.system?.details?.traits?.value,
+  ];
+
+  return traitSources.some((source) =>
+    getArrayFromUnknown(source)
+      .map((trait) => String(trait ?? '').toLowerCase().trim())
+      .includes('aura')
+  );
+}
+
+function isAuraTraitItemActive(item) {
+  if (!item) return false;
+  if (item.system?.active === false) return false;
+  if (item.active === false) return false;
+  if (item.system?.suppressed === true) return false;
+  if (item.disabled === true) return false;
+  return true;
+}
+
+function extractNumericDistance(value) {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string') {
+    const match = value.match(/\d+(?:[\.,]\d+)?/);
+    if (!match) return null;
+    const normalized = match[0].replace(',', '.');
+    const numeric = Number(normalized);
+    return Number.isFinite(numeric) ? numeric : null;
+  }
+  return null;
+}
+
+function getAuraRadiusFromItem(item) {
+  if (!item) return null;
+
+  const auraRule = (item.system?.rules ?? []).find((rule) =>
+    String(rule?.key ?? '').toLowerCase() === 'aura'
+  );
+
+  const radiusCandidates = [
+    item.system?.aura?.radius,
+    item.system?.aura?.value,
+    item.system?.aura?.distance,
+    item.system?.details?.aura?.radius,
+    item.system?.range?.value,
+    item.system?.radius,
+    auraRule?.radius,
+    auraRule?.distance,
+    auraRule?.range,
+  ];
+
+  for (const candidate of radiusCandidates) {
+    const numeric = extractNumericDistance(candidate);
+    if (numeric !== null) return numeric;
+  }
+
+  return null;
+}
+
+function buildTraitAuraFromItem(item) {
+  const radius = getAuraRadiusFromItem(item);
+  if (!Number.isFinite(radius)) {
+    return {
+      slug: item.slug ?? null,
+      name: item.name,
+      radius: null,
+      effects: [{ origin: item.uuid, sourceId: item.uuid, name: item.name, slug: item.slug ?? null }],
+      __diagnosticOnly: true,
+    };
+  }
+
+  return {
+    slug: item.slug ?? null,
+    name: item.name,
+    radius,
+    effects: [{ origin: item.uuid, sourceId: item.uuid, name: item.name, slug: item.slug ?? null }],
+    __diagnosticOnly: false,
+  };
+}
+
+function getNpcAuraTraitItems(sourceToken) {
+  if (sourceToken?.actor?.type !== 'npc') return [];
+  const items = sourceToken.actor?.items ?? [];
+  return items.filter((item) => isAuraTraitItemActive(item) && itemHasAuraTrait(item));
+}
+
+function getOriginItemFromAuraIdentifier(sourceToken, auraIdentifier) {
+  if (!sourceToken?.actor || !auraIdentifier) return null;
+  if (!String(auraIdentifier).startsWith('trait-item:')) return null;
+  const itemUuid = String(auraIdentifier).slice('trait-item:'.length);
+  if (!itemUuid) return null;
+  return sourceToken.actor.items.find((item) => item.uuid === itemUuid) ?? null;
+}
+
 async function handleIncomingAuraEvent(payload) {
   if (!payload) return;
 
@@ -318,13 +431,16 @@ async function handleIncomingAuraEvent(payload) {
 
   if (!token?.actor || !enemy?.actor) return;
   const aura = resolveAuraFromSource(enemy, payload.auraSlug, payload.auraIdentifier);
-  if (!token || !enemy || !aura) return;
+  const originItem = getOriginItemFromAuraIdentifier(enemy, payload.auraIdentifier);
+  const resolvedAura = aura ?? (originItem ? buildTraitAuraFromItem(originItem) : null);
+  if (!token || !enemy || !resolvedAura) return;
 
   await handleAura({
     token,
     enemy,
-    aura,
+    aura: resolvedAura,
     auraIdentifier: payload.auraIdentifier,
+    originItem,
     message: (auraLink) =>
       payload.eventKind === AURA_EVENT_KINDS.START_TURN
         ? `${token.name} beginnt seinen Zug innerhalb der Aura ${auraLink} von ${enemy.name}.`
@@ -611,6 +727,21 @@ function getStandardAuraChecks(activeToken) {
         });
       }
     }
+
+    for (const item of getNpcAuraTraitItems(source)) {
+      const traitAura = buildTraitAuraFromItem(item);
+      const auraIdentifier = `trait-item:${item.uuid}`;
+      checks.push({ source, aura: traitAura, auraIdentifier, originItem: item, diagnosticOnly: traitAura.__diagnosticOnly });
+      logDebug('queued trait-item aura check', {
+        sourceId: source.id,
+        sourceName: source.name,
+        itemId: item.id,
+        itemName: item.name,
+        auraIdentifier,
+        diagnosticOnly: traitAura.__diagnosticOnly,
+        radius: traitAura.radius,
+      });
+    }
   }
 
   return checks;
@@ -653,10 +784,20 @@ function getCurrentStandardAuraHits(token) {
   const auraChecks = getStandardAuraChecks(token);
   const hits = [];
 
-  for (const { source, aura, auraIdentifier } of auraChecks) {
+  for (const { source, aura, auraIdentifier, originItem, diagnosticOnly } of auraChecks) {
+    if (diagnosticOnly) {
+      logDebug('diagnostic trait-based aura found without usable geometry', {
+        sourceId: source.id,
+        sourceName: source.name,
+        auraIdentifier,
+        itemId: originItem?.id ?? null,
+        itemName: originItem?.name ?? null,
+      });
+      continue;
+    }
     if (!isTokenInsideAura(aura, source, token)) continue;
     const auraKey = `${source.id}-${auraIdentifier}`;
-    hits.push({ auraKey, source, aura, auraIdentifier });
+    hits.push({ auraKey, source, aura, auraIdentifier, originItem });
   }
 
   return hits;
@@ -690,7 +831,7 @@ function getDocumentAtMovementStart(token) {
   return token.document.clone({ x, y }, { keepId: true });
 }
 
-async function handleAura({ token, enemy, aura, auraIdentifier, message, whisperToGm = false }) {
+async function handleAura({ token, enemy, aura, auraIdentifier, originItem: providedOriginItem = null, message, whisperToGm = false }) {
   if (!isResponsiblePosterForToken(token)) {
     logDebug('skip standard aura chat message', {
       reason: 'emitter/poster mismatch',
@@ -708,7 +849,11 @@ async function handleAura({ token, enemy, aura, auraIdentifier, message, whisper
     effect?.sourceId ??
     effect?.system?.context?.origin?.uuid ??
     null;
-  let originItem = null;
+  let originItem = providedOriginItem;
+  if (!originUuid && originItem) {
+    originUuid = originItem.uuid ?? null;
+  }
+
   if (!originUuid) {
     originItem = enemy.actor.items.find((i) => i.slug === aura.slug) ?? null;
     if (!originItem && auraIdentifier) {
