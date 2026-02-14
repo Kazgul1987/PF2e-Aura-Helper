@@ -1,0 +1,41 @@
+<section class="aura-helper-tab">
+  {{#if hasCombat}}
+    <header class="aura-helper-tab__header">
+      <p>{{localize "COMBAT.Round"}}: {{round}}</p>
+      <p>{{localize "COMBAT.Turn"}}: {{turn}}</p>
+      <p>Aktive Ziele: {{targetCount}}</p>
+    </header>
+
+    <ol class="aura-helper-tab__combatants">
+      {{#each combatants as |combatant|}}
+        <li class="aura-helper-tab__combatant {{#if combatant.isDefeated}}is-defeated{{/if}}">
+          <label>
+            <input
+              type="checkbox"
+              data-action="toggle-target"
+              data-token-id="{{combatant.tokenId}}"
+              {{#if combatant.isSelected}}checked{{/if}}
+              {{#unless combatant.tokenId}}disabled{{/unless}}
+            />
+            {{combatant.name}}
+          </label>
+
+          {{#if combatant.auras.length}}
+            <ul class="aura-helper-tab__auras">
+              {{#each combatant.auras as |aura|}}
+                <li>
+                  <strong>{{aura.name}}</strong>
+                  {{#if aura.radius}}({{aura.radius}} ft.){{/if}}
+                </li>
+              {{/each}}
+            </ul>
+          {{else}}
+            <p>Keine Auren gefunden.</p>
+          {{/if}}
+        </li>
+      {{/each}}
+    </ol>
+  {{else}}
+    <p>Kein aktiver Kampf gefunden.</p>
+  {{/if}}
+</section>

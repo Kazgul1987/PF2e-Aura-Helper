@@ -22,6 +22,7 @@
   "esmodules": [
     "scripts/nymphs-grace.js",
     "scripts/aura-helper.js",
-    "scripts/winter_sleet.js"
+    "scripts/winter_sleet.js",
+    "scripts/aura-sidebar.js"
   ]
 }
