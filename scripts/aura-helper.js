@@ -425,6 +425,10 @@ function isPartyMemberActor(actor) {
   return partyMembers.some((member) => member.id === actor.id);
 }
 
+function getTokenRoleLabel(token) {
+  return isPartyMemberActor(token?.actor) ? 'PC' : 'NPC';
+}
+
 function getStandardAuraSources(activeToken) {
   if (!activeToken?.actor) return [];
 
@@ -640,6 +644,18 @@ Hooks.on('pf2e.startTurn', async (combatant) => {
   }
   const currentHits = getCurrentStandardAuraHits(token);
   const currentSet = new Set(currentHits.map(({ auraKey }) => auraKey));
+
+  const roleLabel = getTokenRoleLabel(token);
+  logDebug(`${roleLabel} ${token?.name ?? 'Unbekannt'} ist am Zug.`);
+  if (currentHits.length > 0) {
+    const auraSummaries = currentHits.map(({ source, aura }) => `${aura.slug} von ${source.name}`);
+    logDebug(
+      `${roleLabel} ${token?.name ?? 'Unbekannt'} steht in den folgenden Auren von folgenden Tokens: ${auraSummaries.join(', ')}`
+    );
+  } else {
+    logDebug(`${roleLabel} ${token?.name ?? 'Unbekannt'} steht in keinen Auren.`);
+  }
+
   logDebug(
     'standard aura sources in scene',
     currentHits.map(({ source, aura }) => `${source.name}:${aura.slug}`)
@@ -727,6 +743,8 @@ Hooks.on('updateToken', async (tokenDoc, change, _options, userId) => {
       const round = game.combat?.round ?? 0;
       const turn = game.combat?.turn ?? 0;
       const inside = isTokenInsideAura(aura, token);
+      const roleLabel = getTokenRoleLabel(token);
+      logDebug(`${roleLabel} ${token.name} betritt Aura ${aura.slug} von Token ${source.name}.`);
       logDebug('Aura detected (enter)', {
         tokenId: token.id,
         tokenName: token.name,
