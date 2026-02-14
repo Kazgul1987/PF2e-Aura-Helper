@@ -178,6 +178,10 @@ function emitAuraEvent(payload) {
   });
 
   game.socket.emit(`module.${MODULE_ID}`, payload);
+
+  // Foundry may not deliver socket emissions back to the sender in single-client sessions.
+  // Process locally as well so chat reminders still fire when only one GM client is connected.
+  handleIncomingAuraEvent(payload);
 }
 
 function resolveAuraFromSource(sourceToken, auraSlug) {
@@ -187,6 +191,66 @@ function resolveAuraFromSource(sourceToken, auraSlug) {
 
   const auras = [...sourceToken.actor.auras.values()];
   return auras.find((aura) => aura.slug === auraSlug) ?? null;
+}
+
+async function handleIncomingAuraEvent(payload) {
+  if (!payload) return;
+
+  if (payload.type !== AURA_EVENT_TYPE) return;
+  if (
+    payload.eventKind !== AURA_EVENT_KINDS.START_TURN &&
+    payload.eventKind !== AURA_EVENT_KINDS.ENTER &&
+    payload.eventKind !== AURA_EVENT_KINDS.WINTER_SLEET
+  ) {
+    return;
+  }
+  if (isDuplicate(recentAuraEvents, payload)) {
+    logDebug('skip duplicate incoming aura event', {
+      eventKind: payload.eventKind,
+      tokenId: payload.tokenId,
+      enemyId: payload.enemyId,
+      auraSlug: payload.auraSlug,
+      combatId: payload.combatId,
+      round: payload.round,
+      turn: payload.turn,
+    });
+    return;
+  }
+
+  const token = canvas.tokens.get(payload.tokenId);
+  const enemy = canvas.tokens.get(payload.enemyId);
+  logDebug('Aura event received', {
+    eventKind: payload.eventKind,
+    tokenId: payload.tokenId,
+    tokenName: token?.name ?? null,
+    sourceId: payload.enemyId,
+    sourceName: enemy?.name ?? null,
+    auraSlug: payload.auraSlug,
+    round: payload.round,
+    turn: payload.turn,
+  });
+
+  if (payload.eventKind === AURA_EVENT_KINDS.WINTER_SLEET) {
+    const token = canvas.tokens.get(payload.tokenId);
+    const source = canvas.tokens.get(payload.enemyId);
+    await createWinterSleetChatMessage({ token, source, whisperToGm: shouldWhisperToGm() });
+    return;
+  }
+
+  if (!token?.actor || !enemy?.actor) return;
+  const aura = resolveAuraFromSource(enemy, payload.auraSlug);
+  if (!token || !enemy || !aura) return;
+
+  await handleAura({
+    token,
+    enemy,
+    aura,
+    message: (auraLink) =>
+      payload.eventKind === AURA_EVENT_KINDS.START_TURN
+        ? `${token.name} beginnt seinen Zug innerhalb der Aura ${auraLink} von ${enemy.name}.`
+        : `${token.name} betritt die Aura ${auraLink} von ${enemy.name}.`,
+    whisperToGm: shouldWhisperToGm(),
+  });
 }
 
 Hooks.once('ready', () => {
@@ -203,65 +267,7 @@ Hooks.once('ready', () => {
     visibilityFilter: shouldRequireVisibleEnemies() ? 'aktiv' : 'inaktiv',
   });
 
-  game.socket.on(`module.${MODULE_ID}`, async (payload) => {
-    if (!payload) return;
-
-    if (payload.type !== AURA_EVENT_TYPE) return;
-    if (
-      payload.eventKind !== AURA_EVENT_KINDS.START_TURN &&
-      payload.eventKind !== AURA_EVENT_KINDS.ENTER &&
-      payload.eventKind !== AURA_EVENT_KINDS.WINTER_SLEET
-    ) {
-      return;
-    }
-    if (isDuplicate(recentAuraEvents, payload)) {
-      logDebug('skip duplicate incoming aura event', {
-        eventKind: payload.eventKind,
-        tokenId: payload.tokenId,
-        enemyId: payload.enemyId,
-        auraSlug: payload.auraSlug,
-        combatId: payload.combatId,
-        round: payload.round,
-        turn: payload.turn,
-      });
-      return;
-    }
-
-    const token = canvas.tokens.get(payload.tokenId);
-    const enemy = canvas.tokens.get(payload.enemyId);
-    logDebug('Aura event received', {
-      eventKind: payload.eventKind,
-      tokenId: payload.tokenId,
-      tokenName: token?.name ?? null,
-      sourceId: payload.enemyId,
-      sourceName: enemy?.name ?? null,
-      auraSlug: payload.auraSlug,
-      round: payload.round,
-      turn: payload.turn,
-    });
-
-    if (payload.eventKind === AURA_EVENT_KINDS.WINTER_SLEET) {
-      const token = canvas.tokens.get(payload.tokenId);
-      const source = canvas.tokens.get(payload.enemyId);
-      await createWinterSleetChatMessage({ token, source, whisperToGm: shouldWhisperToGm() });
-      return;
-    }
-
-    if (!token?.actor || !enemy?.actor) return;
-    const aura = resolveAuraFromSource(enemy, payload.auraSlug);
-    if (!token || !enemy || !aura) return;
-
-    await handleAura({
-      token,
-      enemy,
-      aura,
-      message: (auraLink) =>
-        payload.eventKind === AURA_EVENT_KINDS.START_TURN
-          ? `${token.name} beginnt seinen Zug innerhalb der Aura ${auraLink} von ${enemy.name}.`
-          : `${token.name} betritt die Aura ${auraLink} von ${enemy.name}.`,
-      whisperToGm: shouldWhisperToGm(),
-    });
-  });
+  game.socket.on(`module.${MODULE_ID}`, handleIncomingAuraEvent);
 });
 
 Hooks.once('init', () => {
