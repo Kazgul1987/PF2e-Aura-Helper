@@ -13,7 +13,14 @@ Dieses Foundry VTT Modul erinnert Spieler daran, wenn sie ihren Zug in einer fei
 
 - **Log level**: Für detaillierte Debug-Ausgaben muss der Wert explizit auf **Debug** gesetzt werden (Legacy-Fallback: **Enable debug logging (Legacy fallback)** nur für bestehende Installationen ohne gesetzten Log-Level).
 - **Only trigger visible enemy auras** (Standard: aktiviert): Aura-Trigger werden nur für Gegner ausgelöst, die für die Gruppe sichtbar sind.
-- **Send aura chat messages publicly** (Standard: deaktiviert): Aura-Nachrichten werden öffentlich im Chat gepostet statt nur an die Spielleitung geflüstert.
+- **Post aura reminders in public chat (instead of GM whisper)** (Standard: deaktiviert):
+  - **Aktiviert**: Aura-Nachrichten erscheinen im öffentlichen Chat für alle.
+  - **Deaktiviert**: Aura-Nachrichten werden **nur an die Spielleitung (GM-Whisper)** gesendet.
 - **Also check allied auras** (Standard: deaktiviert): Prüft zusätzlich verbündete Auraquellen; wenn deaktiviert, werden nur feindliche Auren berücksichtigt.
 
-Im **Debug**-Log wird vor jeder Chat-Nachricht außerdem der Zielkanal (`public` oder `whisper`) sowie die Empfängerliste ausgegeben.
+Direkt beim Start schreibt das Modul im Log eine klar erkennbare Zeile zum aktiven Kanal, z. B.:
+
+- `Aktiver Chat-Kanal für Aura-Nachrichten: GM-Whisper (nur Spielleitung)`
+- `Aktiver Chat-Kanal für Aura-Nachrichten: Öffentlicher Chat (alle Spieler)`
+
+Im **Debug**-Log wird vor jeder Chat-Nachricht zusätzlich der technische Zielkanal (`public` oder `whisper`) sowie die Empfängerliste ausgegeben.
