@@ -283,6 +283,20 @@ async function handleIncomingAuraEvent(payload) {
 
   const token = canvas.tokens.get(payload.tokenId);
   const enemy = canvas.tokens.get(payload.enemyId);
+
+  if (payload.eventKind === AURA_EVENT_KINDS.START_TURN) {
+    const activeCombatant = game.combat?.combatant ?? null;
+    const activeTokenId = activeCombatant?.tokenId ?? activeCombatant?.token?.id ?? null;
+    if (!activeTokenId || payload.tokenId !== activeTokenId) {
+      logDebug('skip start-turn aura event for non-active token', {
+        payloadTokenId: payload.tokenId,
+        activeTokenId,
+        combatId: game.combat?.id ?? null,
+      });
+      return;
+    }
+  }
+
   logDebug('Aura event received', {
     eventKind: payload.eventKind,
     tokenId: payload.tokenId,
@@ -795,6 +809,18 @@ async function checkAllCurrentAuraOccupancy({ eventKind = AURA_EVENT_KINDS.ENTER
 
 Hooks.on('pf2e.startTurn', async (combatant) => {
   const token = combatant.token?.object ?? combatant.token;
+  const activeCombatant = game.combat?.combatant ?? null;
+  const activeTokenId = activeCombatant?.tokenId ?? activeCombatant?.token?.id ?? null;
+  if (!token?.id || !activeTokenId || token.id !== activeTokenId) {
+    logDebug('skip start-turn hook for non-active token', {
+      hookTokenId: token?.id ?? null,
+      activeTokenId,
+      combatantId: combatant?.id ?? null,
+      activeCombatantId: activeCombatant?.id ?? null,
+    });
+    return;
+  }
+
   logDebug('hook entry', {
     hookType: 'pf2e.startTurn',
     tokenName: token?.name ?? null,
