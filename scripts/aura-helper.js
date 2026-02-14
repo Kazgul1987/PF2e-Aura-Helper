@@ -23,6 +23,7 @@ const SETTING_REQUIRE_VISIBLE_ENEMIES = 'requireVisibleEnemies';
 const SETTING_PUBLIC_CHAT_MESSAGES = 'publicChatMessages';
 const SETTING_INCLUDE_ALLIED_AURAS = 'includeAlliedAuras';
 const SETTING_DEBUG_AURA_TRAIT_SCAN = 'debugAuraTraitScan';
+const SETTING_SUPPRESSION_MAP = 'suppressionMap';
 const SETTINGS_KEY_PREFIX = `${MODULE_ID}.`;
 const LOG_LEVELS = {
   OFF: 'off',
@@ -91,6 +92,63 @@ function shouldIncludeAlliedAuras() {
 
 function shouldLogAuraTraitScan() {
   return game.settings.get(MODULE_ID, SETTING_DEBUG_AURA_TRAIT_SCAN);
+}
+
+function getSuppressionMap() {
+  const suppressionMap = game.settings.get(MODULE_ID, SETTING_SUPPRESSION_MAP);
+  return suppressionMap && typeof suppressionMap === 'object' ? suppressionMap : {};
+}
+
+async function setSuppressionState({ targetActorUuid, sourceActorUuid, auraIdentifier, suppressed }) {
+  if (!targetActorUuid || !sourceActorUuid || !auraIdentifier) return;
+
+  const suppressionMap = foundry.utils.deepClone(getSuppressionMap());
+
+  if (suppressed) {
+    suppressionMap[targetActorUuid] ??= {};
+    suppressionMap[targetActorUuid][sourceActorUuid] ??= {};
+    // Canonical shape: suppressionMap[targetActorUuid][sourceActorUuid][auraIdentifier] = true
+    suppressionMap[targetActorUuid][sourceActorUuid][auraIdentifier] = true;
+  } else {
+    delete suppressionMap[targetActorUuid]?.[sourceActorUuid]?.[auraIdentifier];
+
+    if (suppressionMap[targetActorUuid]?.[sourceActorUuid] &&
+      Object.keys(suppressionMap[targetActorUuid][sourceActorUuid]).length === 0) {
+      delete suppressionMap[targetActorUuid][sourceActorUuid];
+    }
+
+    if (suppressionMap[targetActorUuid] && Object.keys(suppressionMap[targetActorUuid]).length === 0) {
+      delete suppressionMap[targetActorUuid];
+    }
+  }
+
+  await game.settings.set(MODULE_ID, SETTING_SUPPRESSION_MAP, suppressionMap);
+}
+
+async function clearSuppressionForActorUuid(actorUuid) {
+  if (!actorUuid) return;
+
+  const suppressionMap = foundry.utils.deepClone(getSuppressionMap());
+  let changed = false;
+
+  if (suppressionMap[actorUuid]) {
+    delete suppressionMap[actorUuid];
+    changed = true;
+  }
+
+  for (const targetActorUuid of Object.keys(suppressionMap)) {
+    if (suppressionMap[targetActorUuid]?.[actorUuid]) {
+      delete suppressionMap[targetActorUuid][actorUuid];
+      changed = true;
+    }
+    if (Object.keys(suppressionMap[targetActorUuid] ?? {}).length === 0) {
+      delete suppressionMap[targetActorUuid];
+      changed = true;
+    }
+  }
+
+  if (!changed) return;
+  await game.settings.set(MODULE_ID, SETTING_SUPPRESSION_MAP, suppressionMap);
 }
 
 function getChatDeliveryTargets(whisperToGm) {
@@ -584,6 +642,13 @@ Hooks.once('init', () => {
     config: true,
     type: Boolean,
     default: false,
+  });
+
+  game.settings.register(MODULE_ID, SETTING_SUPPRESSION_MAP, {
+    scope: 'world',
+    config: false,
+    type: Object,
+    default: {},
   });
 });
 
@@ -1315,7 +1380,7 @@ Hooks.on('updateToken', async (tokenDoc, change, _options, userId) => {
 
 });
 
-Hooks.on('moveToken', (token, movement, operation) => {
+Hooks.on('moveToken', async (token, movement, operation) => {
   if (!token?.actor) return;
 
   logDebug('hook entry', {
@@ -1340,16 +1405,43 @@ Hooks.on('moveToken', (token, movement, operation) => {
   const currentSet = new Set(currentHits.map((hit) => hit.auraKey));
   const prevSet = wasInAura.get(token.id) ?? new Set();
   const entered = [...currentSet].filter((auraKey) => !prevSet.has(auraKey));
+  const exited = [...prevSet].filter((auraKey) => !currentSet.has(auraKey));
   logDebug('moveToken aura diff', {
     tokenId: token.id,
     tokenName: token.name,
     prevSetSize: prevSet.size,
     currentSetSize: currentSet.size,
     entered,
+    exited,
   });
 
+  const targetActorUuid = token.actor?.uuid ?? null;
+  const currentByKey = new Map(currentHits.map((hit) => [hit.auraKey, hit]));
+
+  for (const auraKey of entered) {
+    const hit = currentByKey.get(auraKey);
+    if (!hit) continue;
+    await setSuppressionState({
+      targetActorUuid,
+      sourceActorUuid: hit.source?.actor?.uuid ?? null,
+      auraIdentifier: hit.auraIdentifier,
+      suppressed: true,
+    });
+  }
+
+  for (const auraKey of exited) {
+    const [sourceTokenId, ...auraIdentifierParts] = String(auraKey).split('-');
+    const sourceToken = canvas.tokens.get(sourceTokenId);
+    const auraIdentifier = auraIdentifierParts.join('-');
+    await setSuppressionState({
+      targetActorUuid,
+      sourceActorUuid: sourceToken?.actor?.uuid ?? null,
+      auraIdentifier,
+      suppressed: false,
+    });
+  }
+
   if (entered.length > 0) {
-    const currentByKey = new Map(currentHits.map((hit) => [hit.auraKey, hit]));
     const movementSequence = getMovementEventSequence(token.id, movement, operation);
 
     for (const auraKey of entered) {
@@ -1383,6 +1475,7 @@ Hooks.on('deleteToken', (tokenDoc) => {
   currentAuraOccupancy.delete(tokenDoc.id);
   wasInAura.delete(tokenDoc.id);
   tokenMovementSequence.delete(tokenDoc.id);
+  clearSuppressionForActorUuid(tokenDoc.actor?.uuid ?? null);
 });
 
 Hooks.on('canvasReady', async () => {
