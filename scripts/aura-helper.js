@@ -755,6 +755,7 @@ function getStandardAuraChecks(activeToken) {
 
   for (const source of sources) {
     const auraContainers = getSourceContainerAuras(source);
+    const realAuraIds = new Set();
     logDebug('resolved aura containers for source', {
       sourceId: source.id,
       sourceName: source.name,
@@ -779,6 +780,9 @@ function getStandardAuraChecks(activeToken) {
         }
 
         checks.push({ source, aura, auraIdentifier });
+        realAuraIds.add(auraIdentifier);
+        const auraSlug = normalizeAuraString(aura?.slug);
+        if (auraSlug) realAuraIds.add(auraSlug);
         logDebug('queued aura check', {
           sourceId: source.id,
           sourceName: source.name,
@@ -791,6 +795,26 @@ function getStandardAuraChecks(activeToken) {
     }
 
     for (const item of getNpcAuraTraitItems(source)) {
+      const auraRules = (item.system?.rules ?? []).filter(
+        (rule) => String(rule?.key ?? '').toLowerCase() === 'aura'
+      );
+      const matchingRuleSlug = auraRules
+        .map((rule) => normalizeAuraString(rule?.slug))
+        .find((slug) => slug && realAuraIds.has(slug));
+      const itemSlug = normalizeAuraString(item.slug);
+      const skipForRealAura = !!matchingRuleSlug || (itemSlug ? realAuraIds.has(itemSlug) : false);
+      if (skipForRealAura) {
+        logDebug('skip trait-item aura check due to existing real aura', {
+          sourceId: source.id,
+          sourceName: source.name,
+          itemId: item.id,
+          itemName: item.name,
+          matchingRuleSlug: matchingRuleSlug ?? null,
+          itemSlug: itemSlug ?? null,
+        });
+        continue;
+      }
+
       const traitAura = buildTraitAuraFromItem(item);
       const auraIdentifier = `trait-item:${item.uuid}`;
       checks.push({ source, aura: traitAura, auraIdentifier, originItem: item, diagnosticOnly: traitAura.__diagnosticOnly });
@@ -828,6 +852,11 @@ function getCenterForTokenLike(tokenLike) {
 function isTokenInsideAura(aura, source, tokenLike) {
   if (!aura || !source || !tokenLike) return false;
 
+  const tokenDocument = tokenLike.document ?? tokenLike;
+  if (typeof aura.containsToken === 'function' && tokenDocument) {
+    return !!aura.containsToken(tokenDocument);
+  }
+
   const auraRadius = Number(aura.radius);
   const tokenCenter = getCenterForTokenLike(tokenLike);
   const sourceCenter = getCenterForTokenLike(source);
@@ -836,10 +865,7 @@ function isTokenInsideAura(aura, source, tokenLike) {
     return distance <= auraRadius;
   }
 
-  if (typeof aura.containsToken !== 'function') return false;
-  const tokenOrDocument = tokenLike.document ?? tokenLike;
-  if (!tokenOrDocument) return false;
-  return !!aura.containsToken(tokenOrDocument);
+  return false;
 }
 
 function getCurrentStandardAuraHits(token) {
