@@ -12,6 +12,8 @@ const WINTER_SLEET_RELEVANT_SLUGS = new Set([
   WINTER_SLEET_EFFECT_AURA_SLUG,
   WINTER_SLEET_STANCE_SLUG,
 ]);
+const SETTING_REQUIRE_VISIBLE_ENEMIES = 'requireVisibleEnemies';
+const SETTING_PUBLIC_CHAT_MESSAGES = 'publicChatMessages';
 
 const movementStarts = new Map();
 const recentWinterSleetEvents = new Map();
@@ -35,6 +37,37 @@ function isDuplicateWinterSleetEvent(payload) {
 
 function gmIds() {
   return game.users.filter((u) => u.isGM).map((u) => u.id);
+}
+
+function shouldRequireVisibleEnemies() {
+  if (!game.settings?.settings?.has(`${MODULE_ID}.${SETTING_REQUIRE_VISIBLE_ENEMIES}`)) return true;
+  return game.settings.get(MODULE_ID, SETTING_REQUIRE_VISIBLE_ENEMIES);
+}
+
+function shouldWhisperToGm() {
+  if (!game.settings?.settings?.has(`${MODULE_ID}.${SETTING_PUBLIC_CHAT_MESSAGES}`)) return true;
+  return !game.settings.get(MODULE_ID, SETTING_PUBLIC_CHAT_MESSAGES);
+}
+
+function isTokenInsideAura(aura, tokenLike) {
+  if (!aura || typeof aura.containsToken !== 'function' || !tokenLike) return false;
+  const tokenOrDocument = tokenLike.document ?? tokenLike;
+  if (!tokenOrDocument) return false;
+  return !!aura.containsToken(tokenOrDocument);
+}
+
+function getDocumentAtMovementStart(token) {
+  if (!token?.document || !token._movement) return null;
+
+  const startPoint = token._movement?.rays?.[0]?.A ?? token._movement?.ray?.A;
+  if (!startPoint) return null;
+
+  const width = token.w ?? token.document.width * canvas.grid.size;
+  const height = token.h ?? token.document.height * canvas.grid.size;
+  const x = startPoint.x - width / 2;
+  const y = startPoint.y - height / 2;
+
+  return token.document.clone({ x, y }, { keepId: true });
 }
 
 function isResponsibleOwnerClient(token) {
@@ -103,7 +136,7 @@ function getWinterSleetSourcesForToken(token) {
     const isDefeated = enemy.combatant?.isDefeated ?? enemy.combatant?.defeated ?? false;
     if (!enemy.actor || isHidden || isDefeated) return false;
     if (!enemy.actor.isEnemyOf(token.actor)) return false;
-    if (!isVisibleToParty(enemy)) return false;
+    if (shouldRequireVisibleEnemies() && !isVisibleToParty(enemy)) return false;
     return (
       enemy.actor.itemTypes.effect.some(
         (e) =>
@@ -138,7 +171,7 @@ async function refreshPlayerAuras() {
     if (!hasAura || !hasSleet) continue;
     const aura = getKineticAura(player.actor);
     if (!aura) continue;
-    active.set(player.id, { token: player, radius: aura.radius });
+    active.set(player.id, { token: player, aura });
   }
 
   for (const token of tokens) {
@@ -152,7 +185,7 @@ async function refreshPlayerAuras() {
     for (const condition of conditions) {
       const sourceId = condition.getFlag(AURA_FLAG, AURA_SOURCE_FLAG);
       const source = active.get(sourceId);
-      const inRange = source && canvas.grid.measureDistance(source.token, token) <= source.radius;
+      const inRange = source && isTokenInsideAura(source.aura, token);
       if (!inRange) await condition.delete();
     }
   }
@@ -160,8 +193,7 @@ async function refreshPlayerAuras() {
   for (const [sourceId, data] of active) {
     for (const token of tokens) {
       if (!data.token.actor.isEnemyOf(token.actor)) continue;
-      const distance = canvas.grid.measureDistance(data.token, token);
-      if (distance > data.radius) continue;
+      if (!isTokenInsideAura(data.aura, token)) continue;
       const existing =
         token.actor.items.find(
           (i) =>
@@ -218,7 +250,7 @@ async function createBalanceChatMessage({ token, source }) {
   const content = `${token.name} bewegt sich in der Aura ${sourceLink} von ${source.name} und muss einen Balance-Check ablegen.`;
 
   const speaker = ChatMessage.getSpeaker({ token: token.document, actor: token.actor });
-  await ChatMessage.create({ content, speaker, whisper: gmIds() });
+  await ChatMessage.create({ content, speaker, whisper: shouldWhisperToGm() ? gmIds() : undefined });
 }
 
 Hooks.once('ready', () => {
@@ -241,8 +273,11 @@ Hooks.once('ready', () => {
 });
 
 Hooks.on('pf2e.startTurn', async () => {
-  if (game.user.isGM) return;
   if (!hasKineticSleetAura()) return;
+  if (game.user.isGM) {
+    await refreshPlayerAuras();
+    return;
+  }
   emitWinterSleetRefresh();
 });
 
@@ -261,14 +296,13 @@ Hooks.on('updateToken', async (tokenDoc, change) => {
 
   if (token._movement) {
     if (!movementStarts.has(token.id)) {
-      const startPoint = token._movement?.rays?.[0]?.A ?? token._movement?.ray?.A ?? token.center;
       const startMap = new Map();
+      const movementStartDocument = getDocumentAtMovementStart(token) ?? token.document;
       for (const source of sources) {
         const aura = source.actor.auras?.get(WINTER_SLEET_AURA_SLUG);
         const kineticAura = aura ?? getKineticAura(source.actor);
         if (!kineticAura) continue;
-        const distance = canvas.grid.measureDistance(startPoint, source.center);
-        startMap.set(source.id, distance <= kineticAura.radius);
+        startMap.set(source.id, isTokenInsideAura(kineticAura, movementStartDocument));
       }
       movementStarts.set(token.id, startMap);
     }
@@ -284,8 +318,7 @@ Hooks.on('updateToken', async (tokenDoc, change) => {
     const kineticAura = aura ?? getKineticAura(source.actor);
     if (!kineticAura) continue;
     const startedInside = startMap.get(source.id) ?? false;
-    const distance = canvas.grid.measureDistance(token.center, source.center);
-    const endedInside = distance <= kineticAura.radius;
+    const endedInside = isTokenInsideAura(kineticAura, token);
 
     if (startedInside || endedInside) {
       emitWinterSleetBalance({ tokenId: token.id, sourceId: source.id });
