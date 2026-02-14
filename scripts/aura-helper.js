@@ -53,6 +53,23 @@ function shouldWhisperToGm() {
   return !game.settings.get(MODULE_ID, SETTING_PUBLIC_CHAT_MESSAGES);
 }
 
+function patchChatMessageUserAlias() {
+  const chatMessageClass = CONFIG?.ChatMessage?.documentClass;
+  const prototype = chatMessageClass?.prototype;
+  if (!prototype) return;
+
+  const descriptor = Object.getOwnPropertyDescriptor(prototype, 'user');
+  if (!descriptor?.get || descriptor.set) return;
+
+  Object.defineProperty(prototype, 'user', {
+    configurable: true,
+    enumerable: descriptor.enumerable ?? false,
+    get() {
+      return this.author ?? null;
+    },
+  });
+}
+
 function getAuraEventKey({ combatId, eventKind, tokenId, enemyId, auraSlug, round, turn, eventSequence }) {
   return `${combatId ?? 'none'}:${eventKind}:${tokenId}:${enemyId}:${auraSlug}:${round}:${turn}:${eventSequence ?? 'none'}`;
 }
@@ -185,6 +202,8 @@ Hooks.once('ready', () => {
 });
 
 Hooks.once('init', () => {
+  patchChatMessageUserAlias();
+
   game.settings.register(MODULE_ID, SETTING_DEBUG_ENABLED, {
     name: 'Enable debug logging',
     hint: 'Activates detailed debug logging for PF2e Aura Helper.',
