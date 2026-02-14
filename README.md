@@ -7,3 +7,9 @@ Dieses Foundry VTT Modul erinnert Spieler daran, wenn sie ihren Zug in einer fei
 1. Installiere das Modul in Foundry VTT (v13) und aktiviere es in deiner Welt.
 2. Bei Beginn eines Spielerzuges prüft das Modul, ob sich der aktive Token in einer gegnerischen Aura befindet.
 3. Wird eine Aura gefunden, erscheint eine Chat-Erinnerung samt Aura-Link.
+
+## Einstellungen
+
+- **Only trigger visible enemy auras** (Standard: aktiviert): Aura-Trigger werden nur für Gegner ausgelöst, die für die Gruppe sichtbar sind.
+- **Send aura chat messages publicly** (Standard: deaktiviert): Aura-Nachrichten werden öffentlich im Chat gepostet statt nur an die Spielleitung geflüstert.
+

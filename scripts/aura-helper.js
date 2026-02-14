@@ -17,6 +17,8 @@ const WINTER_SLEET_STANCE_SLUG = 'stance-winter-sleet';
 const WINTER_SLEET_TRIGGER_ON_MOVE_WITHIN = true;
 const SETTING_DEBUG_ENABLED = 'debugEnabled';
 const SETTING_LOG_LEVEL = 'logLevel';
+const SETTING_REQUIRE_VISIBLE_ENEMIES = 'requireVisibleEnemies';
+const SETTING_PUBLIC_CHAT_MESSAGES = 'publicChatMessages';
 const LOG_LEVELS = {
   OFF: 'off',
   INFO: 'info',
@@ -39,6 +41,14 @@ function logInfo(...args) {
   const logLevel = getLogLevel();
   if (logLevel !== LOG_LEVELS.INFO && logLevel !== LOG_LEVELS.DEBUG) return;
   console.info('[Aura Helper]', ...args);
+}
+
+function shouldRequireVisibleEnemies() {
+  return game.settings.get(MODULE_ID, SETTING_REQUIRE_VISIBLE_ENEMIES);
+}
+
+function shouldWhisperToGm() {
+  return !game.settings.get(MODULE_ID, SETTING_PUBLIC_CHAT_MESSAGES);
 }
 
 function getAuraEventKey({ combatId, eventKind, tokenId, enemyId, auraSlug, round, turn }) {
@@ -127,7 +137,7 @@ Hooks.once('ready', () => {
     if (payload.eventKind === AURA_EVENT_KINDS.WINTER_SLEET) {
       const token = canvas.tokens.get(payload.tokenId);
       const source = canvas.tokens.get(payload.enemyId);
-      await createWinterSleetChatMessage({ token, source, whisperToGm: true });
+      await createWinterSleetChatMessage({ token, source, whisperToGm: shouldWhisperToGm() });
       return;
     }
 
@@ -143,7 +153,7 @@ Hooks.once('ready', () => {
         payload.eventKind === AURA_EVENT_KINDS.START_TURN
           ? `${token.name} beginnt seinen Zug innerhalb der Aura ${auraLink} von ${enemy.name}.`
           : `${token.name} betritt die Aura ${auraLink} von ${enemy.name}.`,
-      whisperToGm: true,
+      whisperToGm: shouldWhisperToGm(),
     });
   });
 });
@@ -170,6 +180,24 @@ Hooks.once('init', () => {
       [LOG_LEVELS.DEBUG]: 'Debug',
     },
     default: LOG_LEVELS.OFF,
+  });
+
+  game.settings.register(MODULE_ID, SETTING_REQUIRE_VISIBLE_ENEMIES, {
+    name: 'Only trigger visible enemy auras',
+    hint: 'If enabled, aura reminders trigger only for enemy tokens visible to the party.',
+    scope: 'world',
+    config: true,
+    type: Boolean,
+    default: true,
+  });
+
+  game.settings.register(MODULE_ID, SETTING_PUBLIC_CHAT_MESSAGES, {
+    name: 'Send aura chat messages publicly',
+    hint: 'If enabled, aura reminders are posted to public chat instead of GM whisper.',
+    scope: 'world',
+    config: true,
+    type: Boolean,
+    default: false,
   });
 });
 
@@ -249,11 +277,12 @@ function getStandardAuraSources(activeToken) {
   if (!activeToken?.actor) return [];
 
   const isActivePartyMember = isPartyMemberActor(activeToken.actor);
+  const requireVisibleEnemies = shouldRequireVisibleEnemies();
   return canvas.tokens.placeables.filter((candidate) => {
     if (!isCombatRelevantToken(candidate)) return false;
     if (!candidate.actor.isEnemyOf(activeToken.actor)) return false;
 
-    if (isActivePartyMember) {
+    if (requireVisibleEnemies && isActivePartyMember) {
       return isVisibleToParty(candidate);
     }
 
