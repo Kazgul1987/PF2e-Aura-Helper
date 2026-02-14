@@ -849,20 +849,57 @@ function getCenterForTokenLike(tokenLike) {
   };
 }
 
+function getTokenBaseRadiusInGridUnits(tokenLike) {
+  if (!tokenLike) return 0;
+
+  const document = tokenLike.document ?? tokenLike;
+  const gridSizePx = canvas.grid?.size;
+  if (!gridSizePx) return 0;
+
+  const widthSquares = Number(document.width ?? tokenLike.w ?? 1);
+  const heightSquares = Number(document.height ?? tokenLike.h ?? 1);
+  if (!Number.isFinite(widthSquares) || !Number.isFinite(heightSquares)) return 0;
+
+  const widthPx = widthSquares * gridSizePx;
+  const heightPx = heightSquares * gridSizePx;
+  const baseRadiusPx = Math.max(widthPx, heightPx) / 2;
+  return canvas.grid.measureDistance({ x: 0, y: 0 }, { x: baseRadiusPx, y: 0 });
+}
+
+function safeContainsToken(aura, tokenDocument) {
+  if (typeof aura?.containsToken !== 'function' || !tokenDocument) return null;
+
+  try {
+    return !!aura.containsToken(tokenDocument);
+  } catch (error) {
+    logDebug('aura.containsToken failed; falling back to edge distance', {
+      aura,
+      tokenId: tokenDocument.id ?? null,
+      tokenName: tokenDocument.name ?? null,
+      error: error?.message ?? String(error),
+    });
+    return null;
+  }
+}
+
 function isTokenInsideAura(aura, source, tokenLike) {
   if (!aura || !source || !tokenLike) return false;
 
   const tokenDocument = tokenLike.document ?? tokenLike;
-  if (typeof aura.containsToken === 'function' && tokenDocument) {
-    return !!aura.containsToken(tokenDocument);
+  const containsTokenResult = safeContainsToken(aura, tokenDocument);
+  if (containsTokenResult === true) {
+    return true;
   }
 
   const auraRadius = Number(aura.radius);
   const tokenCenter = getCenterForTokenLike(tokenLike);
   const sourceCenter = getCenterForTokenLike(source);
   if (Number.isFinite(auraRadius) && tokenCenter && sourceCenter) {
-    const distance = canvas.grid.measureDistance(tokenCenter, sourceCenter);
-    return distance <= auraRadius;
+    const centerDistance = canvas.grid.measureDistance(tokenCenter, sourceCenter);
+    const sourceBaseRadiusGrid = getTokenBaseRadiusInGridUnits(source);
+    const targetBaseRadiusGrid = getTokenBaseRadiusInGridUnits(tokenLike);
+    const edgeDistance = Math.max(0, centerDistance - sourceBaseRadiusGrid - targetBaseRadiusGrid);
+    return edgeDistance <= auraRadius;
   }
 
   return false;
