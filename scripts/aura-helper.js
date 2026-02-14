@@ -252,14 +252,36 @@ function getClassDcFromActor(actor) {
   if (!Number.isFinite(classDC)) return null;
   return classDC - 2;
 }
-function isPrimaryUpdaterForToken(token) {
+function isResponsiblePosterForToken(token) {
   const actor = token?.actor;
-  return !!actor && actor.primaryUpdater === game.user;
+  if (!actor) return false;
+
+  const primaryUpdaterId = actor.primaryUpdater?.id ?? null;
+  if (primaryUpdaterId) {
+    return primaryUpdaterId === game.user.id;
+  }
+
+  const ownerLevel = CONST.DOCUMENT_OWNERSHIP_LEVELS.OWNER;
+  const activeNonGmOwnerIds = Object.entries(actor.ownership ?? {})
+    .filter(([id, level]) => {
+      if (id === 'default') return false;
+      if (level < ownerLevel) return false;
+      const user = game.users.get(id);
+      return !!user?.active && !user.isGM;
+    })
+    .map(([id]) => id)
+    .sort((leftId, rightId) => leftId.localeCompare(rightId));
+
+  if (activeNonGmOwnerIds.length === 0) {
+    return game.user.isGM;
+  }
+
+  return activeNonGmOwnerIds[0] === game.user.id;
 }
 
 async function createWinterSleetChatMessage({ token, source, whisperToGm = false }) {
   if (!token?.actor || !source?.actor) return;
-  if (!isPrimaryUpdaterForToken(token)) {
+  if (!isResponsiblePosterForToken(token)) {
     logDebug('skip winter sleet chat message: not primary updater', {
       tokenId: token.id,
       tokenName: token.name,
@@ -394,7 +416,7 @@ function isEmitterForTokenChange(token, userId) {
     return userId === game.user.id;
   }
 
-  return isPrimaryUpdaterForToken(token);
+  return isResponsiblePosterForToken(token);
 }
 
 function getDocumentAtMovementStart(token) {
@@ -412,7 +434,7 @@ function getDocumentAtMovementStart(token) {
 }
 
 async function handleAura({ token, enemy, aura, message, whisperToGm = false }) {
-  if (!isPrimaryUpdaterForToken(token)) {
+  if (!isResponsiblePosterForToken(token)) {
     logDebug('skip standard aura chat message: not primary updater', {
       tokenId: token?.id ?? null,
       tokenName: token?.name ?? null,
