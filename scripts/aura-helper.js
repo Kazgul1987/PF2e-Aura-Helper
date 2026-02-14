@@ -21,6 +21,7 @@ const SETTING_DEBUG_ENABLED = 'debugEnabled';
 const SETTING_LOG_LEVEL = 'logLevel';
 const SETTING_REQUIRE_VISIBLE_ENEMIES = 'requireVisibleEnemies';
 const SETTING_PUBLIC_CHAT_MESSAGES = 'publicChatMessages';
+const SETTING_INCLUDE_ALLIED_AURAS = 'includeAlliedAuras';
 const SETTINGS_KEY_PREFIX = `${MODULE_ID}.`;
 const LOG_LEVELS = {
   OFF: 'off',
@@ -71,6 +72,27 @@ function shouldRequireVisibleEnemies() {
 
 function shouldWhisperToGm() {
   return !game.settings.get(MODULE_ID, SETTING_PUBLIC_CHAT_MESSAGES);
+}
+
+function shouldIncludeAlliedAuras() {
+  return game.settings.get(MODULE_ID, SETTING_INCLUDE_ALLIED_AURAS);
+}
+
+function getChatDeliveryTargets(whisperToGm) {
+  if (!whisperToGm) {
+    return {
+      channel: 'public',
+      recipients: ['all players'],
+      whisper: undefined,
+    };
+  }
+
+  const whisperRecipients = gmIds();
+  return {
+    channel: 'whisper',
+    recipients: whisperRecipients,
+    whisper: whisperRecipients,
+  };
 }
 
 function patchChatMessageUserAlias() {
@@ -165,6 +187,12 @@ Hooks.once('ready', () => {
   ) {
     game.settings.set(MODULE_ID, SETTING_LOG_LEVEL, LOG_LEVELS.DEBUG);
   }
+
+  logInfo('Aura helper mode active', {
+    chatOutput: shouldWhisperToGm() ? 'GM-Whisper' : 'Öffentlich',
+    auraFilter: shouldIncludeAlliedAuras() ? 'Feindliche + verbündete Auren' : 'Nur feindliche Auren',
+    visibilityFilter: shouldRequireVisibleEnemies() ? 'aktiv' : 'inaktiv',
+  });
 
   game.socket.on(`module.${MODULE_ID}`, async (payload) => {
     if (!payload) return;
@@ -270,6 +298,15 @@ Hooks.once('init', () => {
     type: Boolean,
     default: false,
   });
+
+  game.settings.register(MODULE_ID, SETTING_INCLUDE_ALLIED_AURAS, {
+    name: 'Also check allied auras',
+    hint: 'If enabled, aura reminders also trigger for allied tokens, not only enemies.',
+    scope: 'world',
+    config: true,
+    type: Boolean,
+    default: false,
+  });
 });
 
 
@@ -323,10 +360,19 @@ async function createWinterSleetChatMessage({ token, source, whisperToGm = false
   const check = dc !== null ? `@Check[acrobatics|dc:${dc}]` : '@Check[acrobatics]';
   const content = `${token.name} bewegt sich in der Aura ${sourceLink} von ${source.name}: ${check}`;
   const speaker = ChatMessage.getSpeaker({ token: token.document, actor: token.actor });
+  const delivery = getChatDeliveryTargets(whisperToGm);
+  logDebug('creating winter sleet chat message', {
+    channel: delivery.channel,
+    recipients: delivery.recipients,
+    tokenId: token.id,
+    tokenName: token.name,
+    sourceId: source.id,
+    sourceName: source.name,
+  });
   await ChatMessage.create({
     content,
     speaker,
-    whisper: whisperToGm ? gmIds() : undefined,
+    whisper: delivery.whisper,
   });
 }
 
@@ -384,11 +430,13 @@ function getStandardAuraSources(activeToken) {
 
   const isActivePartyMember = isPartyMemberActor(activeToken.actor);
   const requireVisibleEnemies = shouldRequireVisibleEnemies();
+  const includeAlliedAuras = shouldIncludeAlliedAuras();
   return canvas.tokens.placeables.filter((candidate) => {
     if (!isCombatRelevantToken(candidate)) return false;
-    if (!candidate.actor.isEnemyOf(activeToken.actor)) return false;
+    const isEnemyAura = candidate.actor.isEnemyOf(activeToken.actor);
+    if (!isEnemyAura && !includeAlliedAuras) return false;
 
-    if (requireVisibleEnemies && isActivePartyMember) {
+    if (requireVisibleEnemies && isActivePartyMember && isEnemyAura) {
       return isVisibleToParty(candidate);
     }
 
@@ -511,10 +559,20 @@ async function handleAura({ token, enemy, aura, message, whisperToGm = false }) 
     token: token.document,
     actor: token.actor,
   });
+  const delivery = getChatDeliveryTargets(whisperToGm);
+  logDebug('chat delivery target', {
+    channel: delivery.channel,
+    recipients: delivery.recipients,
+    tokenId: token.id,
+    tokenName: token.name,
+    sourceId: enemy.id,
+    sourceName: enemy.name,
+    auraSlug: aura.slug,
+  });
   await ChatMessage.create({
     content,
     speaker,
-    whisper: whisperToGm ? gmIds() : undefined,
+    whisper: delivery.whisper,
   });
   if (!origin) {
     console.warn('[Aura Helper] no item to post for aura', {
