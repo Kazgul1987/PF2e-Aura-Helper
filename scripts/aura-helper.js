@@ -23,6 +23,7 @@ const SETTING_REQUIRE_VISIBLE_ENEMIES = 'requireVisibleEnemies';
 const SETTING_PUBLIC_CHAT_MESSAGES = 'publicChatMessages';
 const SETTING_INCLUDE_ALLIED_AURAS = 'includeAlliedAuras';
 const SETTING_DEBUG_AURA_TRAIT_SCAN = 'debugAuraTraitScan';
+const COMBAT_SUPPRESSION_FLAG_KEY = 'suppressedAuras';
 const SETTINGS_KEY_PREFIX = `${MODULE_ID}.`;
 const LOG_LEVELS = {
   OFF: 'off',
@@ -262,6 +263,53 @@ function resolveAuraFromSource(sourceToken, auraSlug, auraIdentifier) {
   return auraEntries.find(([, aura]) => aura?.slug === auraSlug)?.[1] ?? null;
 }
 
+function getTokenUuid(tokenLike) {
+  const tokenDocument = tokenLike?.document ?? tokenLike;
+  return tokenDocument?.uuid ?? null;
+}
+
+function buildAuraSuppressionKey({ source, auraIdentifier, target }) {
+  const sourceUuid = getTokenUuid(source);
+  const targetUuid = getTokenUuid(target);
+  const normalizedAuraIdentifier = normalizeAuraString(auraIdentifier);
+  if (!sourceUuid || !targetUuid || !normalizedAuraIdentifier) return null;
+  return `${sourceUuid}|${normalizedAuraIdentifier}|${targetUuid}`;
+}
+
+function getCombatAuraSuppressionMap(combat = game.combat) {
+  if (!combat) return {};
+  const suppressionMap = combat.getFlag(MODULE_ID, COMBAT_SUPPRESSION_FLAG_KEY);
+  if (!suppressionMap || typeof suppressionMap !== 'object') return {};
+  return suppressionMap;
+}
+
+function isAuraSuppressed({ source, auraIdentifier, target, combat = game.combat }) {
+  const suppressionKey = buildAuraSuppressionKey({ source, auraIdentifier, target });
+  if (!suppressionKey) return false;
+  const suppressionMap = getCombatAuraSuppressionMap(combat);
+  return suppressionMap[suppressionKey] === true;
+}
+
+async function setAuraSuppression({ source, auraIdentifier, target, suppressed, combat = game.combat }) {
+  if (!combat) return;
+  const suppressionKey = buildAuraSuppressionKey({ source, auraIdentifier, target });
+  if (!suppressionKey) return;
+
+  const suppressionMap = { ...getCombatAuraSuppressionMap(combat) };
+  if (suppressed) {
+    suppressionMap[suppressionKey] = true;
+    await combat.setFlag(MODULE_ID, COMBAT_SUPPRESSION_FLAG_KEY, suppressionMap);
+    return;
+  }
+
+  delete suppressionMap[suppressionKey];
+  if (Object.keys(suppressionMap).length === 0) {
+    await combat.unsetFlag(MODULE_ID, COMBAT_SUPPRESSION_FLAG_KEY);
+    return;
+  }
+  await combat.setFlag(MODULE_ID, COMBAT_SUPPRESSION_FLAG_KEY, suppressionMap);
+}
+
 function getArrayFromUnknown(value) {
   if (Array.isArray(value)) return value;
   if (typeof value === 'string') return [value];
@@ -475,6 +523,20 @@ async function handleIncomingAuraEvent(payload) {
     turn: payload.turn,
   });
 
+  const suppressionIdentifier = payload.auraIdentifier ?? payload.auraSlug;
+  if (isAuraSuppressed({ source: enemy, auraIdentifier: suppressionIdentifier, target: token })) {
+    logDebug('skip aura event due to suppression', {
+      eventKind: payload.eventKind,
+      tokenId: payload.tokenId,
+      tokenName: token?.name ?? null,
+      sourceId: payload.enemyId,
+      sourceName: enemy?.name ?? null,
+      auraIdentifier: suppressionIdentifier ?? null,
+      combatId: game.combat?.id ?? null,
+    });
+    return;
+  }
+
   if (payload.eventKind === AURA_EVENT_KINDS.WINTER_SLEET) {
     const token = canvas.tokens.get(payload.tokenId);
     const source = canvas.tokens.get(payload.enemyId);
@@ -502,13 +564,126 @@ async function handleIncomingAuraEvent(payload) {
   });
 }
 
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#039;');
+}
+
+function getCombatAuraSuppressionMenuEntries(combat = game.combat) {
+  if (!combat) return [];
+
+  const tokens = (combat.combatants ?? [])
+    .map((combatant) =>
+      combatant.token?.object ?? combatant.token ?? canvas.tokens?.get(combatant.tokenId) ?? null
+    )
+    .filter((token) => !!token?.id && !!token.actor);
+
+  const entriesByKey = new Map();
+  for (const target of tokens) {
+    const auraChecks = getStandardAuraChecks(target);
+    for (const { source, aura, auraIdentifier } of auraChecks) {
+      const suppressionKey = buildAuraSuppressionKey({ source, auraIdentifier, target });
+      if (!suppressionKey) continue;
+      if (entriesByKey.has(suppressionKey)) continue;
+      entriesByKey.set(suppressionKey, {
+        suppressionKey,
+        source,
+        target,
+        auraIdentifier,
+        auraName: aura?.name ?? aura?.slug ?? auraIdentifier,
+        sourceName: source?.name ?? source?.actor?.name ?? 'Unbekannte Quelle',
+        targetName: target?.name ?? target?.actor?.name ?? 'Unbekanntes Ziel',
+      });
+    }
+  }
+
+  for (const target of tokens) {
+    for (const source of getWinterSleetSources()) {
+      if (!source?.actor?.isEnemyOf(target.actor)) continue;
+      const auraIdentifier = WINTER_SLEET_AURA_SLUG;
+      const suppressionKey = buildAuraSuppressionKey({ source, auraIdentifier, target });
+      if (!suppressionKey || entriesByKey.has(suppressionKey)) continue;
+      entriesByKey.set(suppressionKey, {
+        suppressionKey,
+        source,
+        target,
+        auraIdentifier,
+        auraName: 'Winter Sleet',
+        sourceName: source?.name ?? source?.actor?.name ?? 'Unbekannte Quelle',
+        targetName: target?.name ?? target?.actor?.name ?? 'Unbekanntes Ziel',
+      });
+    }
+  }
+
+  return [...entriesByKey.values()].sort((a, b) =>
+    `${a.sourceName}|${a.targetName}|${a.auraName}`.localeCompare(`${b.sourceName}|${b.targetName}|${b.auraName}`)
+  );
+}
+
+function buildAuraSuppressionMenuContent(entries, combat = game.combat) {
+  if (!combat) {
+    return '<p>Kein aktiver Kampf gefunden.</p>';
+  }
+
+  if (entries.length === 0) {
+    return '<p>Keine Aura-Kombinationen im aktiven Kampf gefunden.</p>';
+  }
+
+  const rows = entries
+    .map((entry) => {
+      const checked = isAuraSuppressed({
+        source: entry.source,
+        auraIdentifier: entry.auraIdentifier,
+        target: entry.target,
+        combat,
+      });
+      return `<tr>
+        <td>${escapeHtml(entry.sourceName)}</td>
+        <td>${escapeHtml(entry.auraName)}</td>
+        <td>${escapeHtml(entry.targetName)}</td>
+        <td style="text-align:center;">
+          <input
+            type="checkbox"
+            class="pf2e-aura-helper-suppression-checkbox"
+            data-source-id="${escapeHtml(entry.source.id)}"
+            data-target-id="${escapeHtml(entry.target.id)}"
+            data-aura-identifier="${escapeHtml(entry.auraIdentifier)}"
+            ${checked ? 'checked' : ''}
+          />
+        </td>
+      </tr>`;
+    })
+    .join('');
+
+  return `<p>Unterdrücke einzelne Aura-Erinnerungen für den aktiven Kampf.</p>
+    <div style="max-height: 420px; overflow: auto;">
+      <table style="width: 100%; border-collapse: collapse;">
+        <thead>
+          <tr>
+            <th style="text-align:left;">Quelle</th>
+            <th style="text-align:left;">Aura</th>
+            <th style="text-align:left;">Ziel</th>
+            <th style="text-align:center;">Unterdrücken</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+}
+
 function openAuraSuppressionMenu() {
   if (!game.user?.isGM) return;
 
   if (typeof Dialog !== 'undefined') {
+    const combat = game.combat;
+    const entries = getCombatAuraSuppressionMenuEntries(combat);
     new Dialog({
       title: 'PF2e Aura Helper',
-      content: '<p>Hier können zukünftig Optionen zur Aura-Unterdrückung verwaltet werden.</p>',
+      content: buildAuraSuppressionMenuContent(entries, combat),
       buttons: {
         close: {
           icon: '<i class="fas fa-times"></i>',
@@ -516,6 +691,28 @@ function openAuraSuppressionMenu() {
         },
       },
       default: 'close',
+      render: (html) => {
+        const root = html?.[0] ?? html;
+        root?.querySelectorAll?.('.pf2e-aura-helper-suppression-checkbox')?.forEach((checkbox) => {
+          checkbox.addEventListener('change', async (event) => {
+            const sourceId = event.currentTarget.dataset.sourceId;
+            const targetId = event.currentTarget.dataset.targetId;
+            const auraIdentifier = event.currentTarget.dataset.auraIdentifier;
+            const source = canvas.tokens.get(sourceId);
+            const target = canvas.tokens.get(targetId);
+            const suppressed = !!event.currentTarget.checked;
+
+            await setAuraSuppression({ source, auraIdentifier, target, suppressed, combat });
+            logDebug('updated aura suppression', {
+              combatId: combat?.id ?? null,
+              sourceId,
+              targetId,
+              auraIdentifier,
+              suppressed,
+            });
+          });
+        });
+      },
     }).render(true);
     return;
   }
@@ -1344,6 +1541,7 @@ Hooks.on('updateToken', async (tokenDoc, change, _options, userId) => {
         tokenId: token.id,
         enemyId: source.id,
         auraSlug: WINTER_SLEET_AURA_SLUG,
+        auraIdentifier: WINTER_SLEET_AURA_SLUG,
         combatId: game.combat?.id ?? null,
         round: game.combat?.round ?? 0,
         turn: game.combat?.turn ?? 0,
