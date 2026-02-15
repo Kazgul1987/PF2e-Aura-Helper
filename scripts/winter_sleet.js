@@ -6,6 +6,19 @@ const WINTER_SLEET_BALANCE_EVENT_TYPE = 'WINTER_SLEET_BALANCE';
 const WINTER_SLEET_AURA_SLUG = 'kinetic-aura';
 const WINTER_SLEET_EFFECT_AURA_SLUG = 'effect-kinetic-aura';
 const WINTER_SLEET_STANCE_SLUG = 'stance-winter-sleet';
+const WINTER_SLEET_AURA_SLUG_CANDIDATES = new Set([
+  WINTER_SLEET_AURA_SLUG,
+  WINTER_SLEET_EFFECT_AURA_SLUG,
+  'kinetic aura',
+  'effect kinetic aura',
+]);
+const WINTER_SLEET_STANCE_SLUG_CANDIDATES = new Set([
+  WINTER_SLEET_STANCE_SLUG,
+  'winter-sleet',
+  'winter sleet',
+]);
+const WINTER_SLEET_AURA_NAME_CANDIDATES = new Set(['kinetic aura']);
+const WINTER_SLEET_STANCE_NAME_CANDIDATES = new Set(['winter sleet']);
 const WINTER_SLEET_EVENT_TTL_MS = 5000;
 const WINTER_SLEET_ITEM_REFRESH_DEBOUNCE_MS = 150;
 const WINTER_SLEET_RELEVANT_SLUGS = new Set([
@@ -106,21 +119,67 @@ function getKineticAura(actor) {
   );
 }
 
+function normalizeWinterSleetIdentifier(value) {
+  return String(value ?? '')
+    .toLowerCase()
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+function matchesWinterSleetCandidates(item, slugCandidates, nameCandidates) {
+  if (!item) return false;
+  const normalizedSlug = normalizeWinterSleetIdentifier(item.slug);
+  const normalizedName = normalizeWinterSleetIdentifier(item.name);
+  return slugCandidates.has(normalizedSlug) || nameCandidates.has(normalizedName);
+}
+
+function isWinterSleetAuraItem(item) {
+  return matchesWinterSleetCandidates(
+    item,
+    WINTER_SLEET_AURA_SLUG_CANDIDATES,
+    WINTER_SLEET_AURA_NAME_CANDIDATES
+  );
+}
+
+function isWinterSleetStanceItem(item) {
+  return matchesWinterSleetCandidates(
+    item,
+    WINTER_SLEET_STANCE_SLUG_CANDIDATES,
+    WINTER_SLEET_STANCE_NAME_CANDIDATES
+  );
+}
+
+function collectWinterSleetSourceDebugEffects(actor) {
+  return actor?.itemTypes?.effect?.map((effect) => ({
+    slug: effect.slug ?? null,
+    name: effect.name ?? null,
+    normalizedSlug: normalizeWinterSleetIdentifier(effect.slug),
+    normalizedName: normalizeWinterSleetIdentifier(effect.name),
+  })) ?? [];
+}
+
 function hasWinterSleetStance(actor) {
   if (!actor) return false;
-  return actor.items.some((item) => item.slug === WINTER_SLEET_STANCE_SLUG);
+  return actor.items.some((item) => isWinterSleetStanceItem(item));
 }
 
 function hasKineticSleetAura() {
   return canvas.tokens.placeables.some((token) => {
     if (!token.actor) return false;
+    const sourceEffects = collectWinterSleetSourceDebugEffects(token.actor);
+    const hasAura = token.actor.itemTypes.effect.some((effect) => isWinterSleetAuraItem(effect));
+    const hasStance = token.actor.itemTypes.effect.some((effect) => isWinterSleetStanceItem(effect));
+    logWinterSleetDebug('hasKineticSleetAura source candidate', {
+      sourceToken: token.id,
+      hasAura,
+      hasStance,
+      sourceEffects,
+    });
     return (
-      token.actor.itemTypes.effect.some(
-        (e) =>
-          e.slug === WINTER_SLEET_EFFECT_AURA_SLUG ||
-          e.slug === WINTER_SLEET_AURA_SLUG
-      ) &&
-      token.actor.itemTypes.effect.some((e) => e.slug === WINTER_SLEET_STANCE_SLUG)
+      hasAura &&
+      hasStance
     );
   });
 }
@@ -155,21 +214,18 @@ function getWinterSleetSourcesForToken(token) {
     if (!enemy.actor.isEnemyOf(token.actor)) return false;
     if (shouldRequireVisibleEnemies() && !isVisibleToParty(enemy)) return false;
     const aura = getKineticAura(enemy.actor);
+    const sourceEffects = collectWinterSleetSourceDebugEffects(enemy.actor);
+    const hasAura = enemy.actor.itemTypes.effect.some((effect) => isWinterSleetAuraItem(effect));
+    const hasStance = enemy.actor.itemTypes.effect.some((effect) => isWinterSleetStanceItem(effect));
     logWinterSleetDebug('Source candidate checked', {
       targetToken: token.id,
       sourceToken: enemy.id,
       auraFound: !!aura,
-      sourceSlugs: enemy.actor.itemTypes.effect.map((effect) => effect.slug),
+      hasAura,
+      hasStance,
+      sourceEffects,
     });
-    return (
-      enemy.actor.itemTypes.effect.some(
-        (e) =>
-          e.slug === WINTER_SLEET_EFFECT_AURA_SLUG ||
-          e.slug === WINTER_SLEET_AURA_SLUG
-      ) &&
-      enemy.actor.itemTypes.effect.some((e) => e.slug === WINTER_SLEET_STANCE_SLUG) &&
-      aura
-    );
+    return hasAura && hasStance && aura;
   });
 }
 
@@ -198,12 +254,20 @@ async function refreshPlayerAuras() {
       reasons.push('missing-winter-sleet-stance');
     }
 
+    const sourceEffects = collectWinterSleetSourceDebugEffects(token.actor);
+    const hasAuraSourceItem = token.actor.itemTypes.effect.some((effect) => isWinterSleetAuraItem(effect));
+    const hasStanceSourceItem = token.actor.itemTypes.effect.some((effect) => isWinterSleetStanceItem(effect));
+    if (!hasAuraSourceItem) reasons.push('missing-aura-effect-item');
+    if (!hasStanceSourceItem) reasons.push('missing-stance-effect-item');
+
     if (reasons.length > 0) {
       logWinterSleetDebug('Skipping active source candidate', {
         sourceToken: token.id,
         reasons,
+        hasAuraSourceItem,
+        hasStanceSourceItem,
         auraSlug: aura?.slug ?? null,
-        sourceSlugs: token.actor?.items?.map((item) => item.slug),
+        sourceEffects,
       });
       continue;
     }
@@ -211,6 +275,9 @@ async function refreshPlayerAuras() {
     logWinterSleetDebug('Active source registered', {
       sourceToken: token.id,
       auraSlug: aura.slug,
+      hasAuraSourceItem,
+      hasStanceSourceItem,
+      sourceEffects,
     });
     active.set(token.id, { token, aura });
   }
