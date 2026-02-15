@@ -16,6 +16,8 @@ const AURA_EVENT_TTL_MS = 5000;
 const WINTER_SLEET_AURA_SLUG = 'kinetic-aura';
 const WINTER_SLEET_EFFECT_SLUG = 'effect-kinetic-aura';
 const WINTER_SLEET_STANCE_SLUG = 'stance-winter-sleet';
+const NYMPHS_GRACE_AURA_SLUG = 'nymphs-grace';
+const NYMPHS_GRACE_NAME_RE = /nymph['’]s\s+grace/i;
 const WINTER_SLEET_TRIGGER_ON_MOVE_WITHIN = true;
 const SETTING_DEBUG_ENABLED = 'debugEnabled';
 const SETTING_LOG_LEVEL = 'logLevel';
@@ -92,6 +94,40 @@ function shouldIncludeAlliedAuras() {
 
 function shouldLogAuraTraitScan() {
   return game.settings.get(MODULE_ID, SETTING_DEBUG_AURA_TRAIT_SCAN);
+}
+
+function getSpellSaveDc(actor) {
+  const spellDc = Number(
+    actor?.system?.attributes?.spellDC?.value ??
+      actor?.system?.attributes?.spellDC?.dc ??
+      actor?.system?.attributes?.spelldc?.value ??
+      actor?.system?.attributes?.spelldc?.dc
+  );
+
+  return Number.isFinite(spellDc) ? spellDc : null;
+}
+
+function getNymphsGraceWillSaveInlineLink(sourceActor) {
+  const spellDc = getSpellSaveDc(sourceActor);
+  if (spellDc === null) return null;
+  return `@Check[type:will|dc:${spellDc}]`;
+}
+
+function isNymphsGraceAura({ aura, origin }) {
+  const auraSlug = aura?.slug ?? '';
+  if (auraSlug === NYMPHS_GRACE_AURA_SLUG) return true;
+
+  const auraName = origin?.name ?? aura?.name ?? '';
+  return NYMPHS_GRACE_NAME_RE.test(auraName);
+}
+
+function appendNymphsGraceSavePrompt(content, { aura, origin, sourceActor }) {
+  if (!isNymphsGraceAura({ aura, origin })) return content;
+
+  const willSaveInlineLink = getNymphsGraceWillSaveInlineLink(sourceActor);
+  if (!willSaveInlineLink) return content;
+
+  return `${content} ${willSaveInlineLink}{Will Save} gegen den Zauber-SG (${getSpellSaveDc(sourceActor)}).`;
 }
 
 function getChatDeliveryTargets(whisperToGm) {
@@ -1409,7 +1445,11 @@ async function handleAura({ token, enemy, aura, auraIdentifier, originItem: prov
   const origin = originItem ?? (originUuid ? await fromUuid(originUuid) : null);
   const auraName = origin?.name ?? aura.slug ?? auraIdentifier ?? 'Unbekannte Aura';
   const auraLink = originUuid ? `@UUID[${originUuid}]{${auraName}}` : auraName;
-  const content = message(auraLink);
+  const content = appendNymphsGraceSavePrompt(message(auraLink), {
+    aura,
+    origin,
+    sourceActor: enemy.actor,
+  });
   logDebug('creating chat message', content);
   const speaker = ChatMessage.getSpeaker({
     token: token.document,
