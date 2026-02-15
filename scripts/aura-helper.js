@@ -355,20 +355,80 @@ function getCombatAuraSuppressionMap(combat = game.combat) {
   return suppressionMap;
 }
 
+function parseAuraSuppressionKey(key) {
+  if (typeof key !== 'string') return null;
+  const [sourcePart, auraPart, targetPart, ...rest] = key.split('|');
+  if (rest.length > 0) return null;
+
+  const sourceIdentity = normalizeAuraString(sourcePart);
+  const auraIdentifier = normalizeAuraString(auraPart);
+  const targetIdentity = normalizeAuraString(targetPart);
+  if (!sourceIdentity || !auraIdentifier || !targetIdentity) return null;
+
+  return {
+    sourceIdentity,
+    auraIdentifier,
+    targetIdentity,
+  };
+}
+
+function getSuppressionIdentityVariants(tokenLike) {
+  const variants = new Set();
+  const tokenIdentity = normalizeAuraString(getTokenSuppressionIdentity(tokenLike));
+  const tokenUuid = normalizeAuraString(getTokenUuid(tokenLike));
+  if (tokenIdentity) variants.add(tokenIdentity);
+  if (tokenUuid) variants.add(tokenUuid);
+  return variants;
+}
+
+function getMatchingSuppressionKeys({ suppressionMap, source, auraIdentifier, target }) {
+  const normalizedAuraIdentifier = normalizeAuraString(auraIdentifier);
+  if (!normalizedAuraIdentifier || !suppressionMap || typeof suppressionMap !== 'object') return [];
+
+  const sourceVariants = getSuppressionIdentityVariants(source);
+  const targetVariants = getSuppressionIdentityVariants(target);
+  const suppressionKey = buildAuraSuppressionKey({ source, auraIdentifier: normalizedAuraIdentifier, target });
+  const legacySuppressionKey = buildLegacyAuraSuppressionKey({
+    source,
+    auraIdentifier: normalizedAuraIdentifier,
+    target,
+  });
+
+  if (suppressionKey) sourceVariants.add(suppressionKey.split('|')[0]);
+  if (suppressionKey) targetVariants.add(suppressionKey.split('|')[2]);
+  if (legacySuppressionKey) sourceVariants.add(legacySuppressionKey.split('|')[0]);
+  if (legacySuppressionKey) targetVariants.add(legacySuppressionKey.split('|')[2]);
+
+  return Object.keys(suppressionMap).filter((key) => {
+    if (key === suppressionKey || key === legacySuppressionKey) return true;
+    const parsedKey = parseAuraSuppressionKey(key);
+    if (!parsedKey) return false;
+    if (parsedKey.auraIdentifier !== normalizedAuraIdentifier) return false;
+    return sourceVariants.has(parsedKey.sourceIdentity) && targetVariants.has(parsedKey.targetIdentity);
+  });
+}
+
 function isAuraSuppressed({ source, auraIdentifier, target, combat = game.combat }) {
   const suppressionKey = buildAuraSuppressionKey({ source, auraIdentifier, target });
   const suppressionMap = getCombatAuraSuppressionMap(combat);
 
   if (suppressionKey) {
-    const isSuppressed = suppressionMap[suppressionKey] === true;
-    logDebug('read aura suppression key', { suppressionKey, isSuppressed, format: 'scene-token' });
-    if (isSuppressed) return true;
+    const hasSceneTokenEntry = Object.hasOwn(suppressionMap, suppressionKey);
+    if (hasSceneTokenEntry) {
+      const isSuppressed = suppressionMap[suppressionKey] === true;
+      logDebug('read aura suppression state', {
+        suppressionKey,
+        isSuppressed,
+        format: 'scene-token',
+      });
+      return isSuppressed;
+    }
   }
 
   const legacySuppressionKey = buildLegacyAuraSuppressionKey({ source, auraIdentifier, target });
   if (!legacySuppressionKey) return false;
   const isLegacySuppressed = suppressionMap[legacySuppressionKey] === true;
-  logDebug('read legacy aura suppression key', {
+  logDebug('read aura suppression state', {
     suppressionKey: legacySuppressionKey,
     isSuppressed: isLegacySuppressed,
     format: 'uuid',
@@ -406,12 +466,14 @@ async function setAuraSuppression({ source, auraIdentifier, target, suppressed, 
     return;
   }
 
-  if (suppressionKey) delete suppressionMap[suppressionKey];
-  delete suppressionMap[effectiveSuppressionKey];
-  if (legacySuppressionKey) delete suppressionMap[legacySuppressionKey];
+  const matchingKeys = getMatchingSuppressionKeys({ suppressionMap, source, auraIdentifier, target });
+  for (const key of matchingKeys) {
+    delete suppressionMap[key];
+  }
   logDebug('set aura suppression map update', {
     suppressionKey: effectiveSuppressionKey,
     suppressed: false,
+    removedKeys: matchingKeys,
     previousSuppressionMap,
     nextSuppressionMap: suppressionMap,
   });
@@ -420,6 +482,62 @@ async function setAuraSuppression({ source, auraIdentifier, target, suppressed, 
     return;
   }
   await combat.setFlag(MODULE_ID, COMBAT_SUPPRESSION_FLAG_KEY, suppressionMap);
+}
+
+async function migrateLegacyAuraSuppressionMap(combat = game.combat) {
+  if (!combat) return false;
+
+  const suppressionMap = { ...getCombatAuraSuppressionMap(combat) };
+  const updatedMap = { ...suppressionMap };
+  let didChange = false;
+
+  for (const [key, value] of Object.entries(suppressionMap)) {
+    if (value !== true) {
+      delete updatedMap[key];
+      didChange = true;
+      continue;
+    }
+
+    const parsedKey = parseAuraSuppressionKey(key);
+    if (!parsedKey) {
+      delete updatedMap[key];
+      didChange = true;
+      continue;
+    }
+
+    const sourceDoc = await fromUuid(parsedKey.sourceIdentity).catch(() => null);
+    const targetDoc = await fromUuid(parsedKey.targetIdentity).catch(() => null);
+    if (!sourceDoc || !targetDoc) continue;
+
+    const source = sourceDoc?.object ?? sourceDoc;
+    const target = targetDoc?.object ?? targetDoc;
+    const migratedKey = buildAuraSuppressionKey({
+      source,
+      auraIdentifier: parsedKey.auraIdentifier,
+      target,
+    });
+
+    delete updatedMap[key];
+    if (migratedKey) {
+      updatedMap[migratedKey] = true;
+    }
+    didChange = true;
+    logDebug('migrated legacy aura suppression key', {
+      previousKey: key,
+      migratedKey: migratedKey ?? null,
+      format: migratedKey ? 'scene-token' : 'removed',
+    });
+  }
+
+  if (!didChange) return false;
+
+  if (Object.keys(updatedMap).length === 0) {
+    await combat.unsetFlag(MODULE_ID, COMBAT_SUPPRESSION_FLAG_KEY);
+    return true;
+  }
+
+  await combat.setFlag(MODULE_ID, COMBAT_SUPPRESSION_FLAG_KEY, updatedMap);
+  return true;
 }
 
 async function verifyAuraSuppressionState({
@@ -711,13 +829,15 @@ function getCombatTokens(combat = game.combat) {
     .filter((token) => !!token?.id && !!token.actor);
 }
 
-function getAuraSuppressionMenuData(combat = game.combat) {
+async function getAuraSuppressionMenuData(combat = game.combat) {
   if (!combat) {
     return {
       hasCombat: false,
       sources: [],
     };
   }
+
+  await migrateLegacyAuraSuppressionMap(combat);
 
   const sourceMap = new Map();
   const tokens = getCombatTokens(combat);
@@ -818,7 +938,7 @@ class AuraSuppressionMenuApplication extends Application {
   }
 
   async getData() {
-    return getAuraSuppressionMenuData(game.combat);
+    return await getAuraSuppressionMenuData(game.combat);
   }
 
   activateListeners(html) {
