@@ -729,33 +729,33 @@ function openAuraSuppressionMenu() {
   auraSuppressionMenuApplication.render(true, { focus: true });
 }
 
-function addGmAuraControlsButton(_app, html) {
+function registerGmAuraControlsButton(controls) {
   if (!game.user?.isGM) return;
 
-  const controlsRoot = document.querySelector('#controls');
-  if (!controlsRoot) return;
+  const preferredControlNames = ['token', 'measure'];
+  const targetControl =
+    preferredControlNames.map((name) => controls.find((control) => control.name === name)).find(Boolean) ??
+    controls.find((control) => Array.isArray(control.tools));
 
-  const htmlElement = html?.[0] ?? html;
-  const hookScopedContainer =
-    htmlElement?.querySelector?.('.main-controls, .control-tools') ??
-    htmlElement?.find?.('.main-controls, .control-tools')?.[0];
-  const controlsContainer =
-    hookScopedContainer ?? controlsRoot.querySelector('.main-controls, .control-tools');
-  if (!controlsContainer) return;
+  if (!targetControl) {
+    logDebug('Could not register PF2e Aura Helper control button: no target scene control found.', {
+      availableControls: controls.map((control) => control.name),
+    });
+    return;
+  }
 
-  if (controlsContainer.querySelector('.pf2e-aura-helper-control')) return;
+  targetControl.tools ??= [];
 
-  const auraButton = document.createElement('li');
-  auraButton.classList.add('scene-control', 'pf2e-aura-helper-control');
-  auraButton.dataset.control = 'pf2e-aura-helper';
-  auraButton.title = 'PF2e Aura Helper';
-  auraButton.innerHTML = '<i class="fas fa-circle-radiation"></i>';
-  auraButton.addEventListener('click', (event) => {
-    event.preventDefault();
-    openAuraSuppressionMenu();
+  if (targetControl.tools.some((tool) => tool.name === 'pf2e-aura-helper')) return;
+
+  targetControl.tools.push({
+    name: 'pf2e-aura-helper',
+    title: 'PF2e Aura Helper',
+    icon: 'fas fa-circle-radiation',
+    button: true,
+    onClick: () => openAuraSuppressionMenu(),
+    visible: game.user.isGM,
   });
-
-  controlsContainer.appendChild(auraButton);
 }
 
 Hooks.once('ready', () => {
@@ -780,7 +780,7 @@ Hooks.once('ready', () => {
   game.socket.on(`module.${MODULE_ID}`, handleIncomingAuraEvent);
 });
 
-Hooks.on('renderSceneControls', addGmAuraControlsButton);
+Hooks.on('getSceneControlButtons', registerGmAuraControlsButton);
 Hooks.on('createCombat', refreshAuraSuppressionMenu);
 Hooks.on('updateCombat', refreshAuraSuppressionMenu);
 Hooks.on('deleteCombat', refreshAuraSuppressionMenu);
