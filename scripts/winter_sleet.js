@@ -106,6 +106,11 @@ function getKineticAura(actor) {
   );
 }
 
+function hasWinterSleetStance(actor) {
+  if (!actor) return false;
+  return actor.items.some((item) => item.slug === WINTER_SLEET_STANCE_SLUG);
+}
+
 function hasKineticSleetAura() {
   return canvas.tokens.placeables.some((token) => {
     if (!token.actor) return false;
@@ -174,26 +179,40 @@ async function refreshPlayerAuras() {
   const tokens = canvas.tokens.placeables.filter(
     (t) => t.actor && (t.isVisible ?? !t.document.hidden)
   );
-  const partyMembers = game.actors.party?.members ?? [];
-  const players = tokens.filter((t) =>
-    partyMembers.some((member) => member.id === t.actor.id)
-  );
 
   const active = new Map();
-  for (const player of players) {
-    const aura = getKineticAura(player.actor);
+  for (const token of canvas.tokens.placeables) {
+    const reasons = [];
+    if (!token.actor) reasons.push('missing-actor');
+
+    const isVisible = token.isVisible ?? !token.document.hidden;
+    if (!isVisible) reasons.push('hidden-or-not-visible');
+
+    const aura = getKineticAura(token.actor);
     if (!aura) {
-      logWinterSleetDebug('Skipping active source without aura instance', {
-        sourceToken: player.id,
-        sourceSlugs: player.actor.itemTypes.effect.map((effect) => effect.slug),
+      reasons.push('missing-kinetic-aura');
+    }
+
+    const hasStance = hasWinterSleetStance(token.actor);
+    if (!hasStance) {
+      reasons.push('missing-winter-sleet-stance');
+    }
+
+    if (reasons.length > 0) {
+      logWinterSleetDebug('Skipping active source candidate', {
+        sourceToken: token.id,
+        reasons,
+        auraSlug: aura?.slug ?? null,
+        sourceSlugs: token.actor?.items?.map((item) => item.slug),
       });
       continue;
     }
+
     logWinterSleetDebug('Active source registered', {
-      sourceToken: player.id,
+      sourceToken: token.id,
       auraSlug: aura.slug,
     });
-    active.set(player.id, { token: player, aura });
+    active.set(token.id, { token, aura });
   }
 
   for (const token of tokens) {
