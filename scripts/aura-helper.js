@@ -379,21 +379,42 @@ function isAuraSuppressed({ source, auraIdentifier, target, combat = game.combat
 async function setAuraSuppression({ source, auraIdentifier, target, suppressed, combat = game.combat }) {
   if (!combat) return;
   const suppressionKey = buildAuraSuppressionKey({ source, auraIdentifier, target });
-  if (!suppressionKey) return;
   const legacySuppressionKey = buildLegacyAuraSuppressionKey({ source, auraIdentifier, target });
+  const effectiveSuppressionKey = suppressionKey ?? legacySuppressionKey;
+  if (!effectiveSuppressionKey) return;
 
   const suppressionMap = { ...getCombatAuraSuppressionMap(combat) };
+  const previousSuppressionMap = { ...suppressionMap };
+
+  logDebug('set aura suppression calculated keys', {
+    suppressionKey,
+    legacySuppressionKey,
+    effectiveSuppressionKey,
+    suppressed,
+  });
+
   if (suppressed) {
-    suppressionMap[suppressionKey] = true;
-    if (legacySuppressionKey) delete suppressionMap[legacySuppressionKey];
-    logDebug('set aura suppression key', { suppressionKey, suppressed: true, format: 'scene-token' });
+    suppressionMap[effectiveSuppressionKey] = true;
+    if (legacySuppressionKey && legacySuppressionKey !== effectiveSuppressionKey) delete suppressionMap[legacySuppressionKey];
+    logDebug('set aura suppression map update', {
+      suppressionKey: effectiveSuppressionKey,
+      suppressed: true,
+      previousSuppressionMap,
+      nextSuppressionMap: suppressionMap,
+    });
     await combat.setFlag(MODULE_ID, COMBAT_SUPPRESSION_FLAG_KEY, suppressionMap);
     return;
   }
 
-  delete suppressionMap[suppressionKey];
+  if (suppressionKey) delete suppressionMap[suppressionKey];
+  delete suppressionMap[effectiveSuppressionKey];
   if (legacySuppressionKey) delete suppressionMap[legacySuppressionKey];
-  logDebug('set aura suppression key', { suppressionKey, suppressed: false, format: 'scene-token' });
+  logDebug('set aura suppression map update', {
+    suppressionKey: effectiveSuppressionKey,
+    suppressed: false,
+    previousSuppressionMap,
+    nextSuppressionMap: suppressionMap,
+  });
   if (Object.keys(suppressionMap).length === 0) {
     await combat.unsetFlag(MODULE_ID, COMBAT_SUPPRESSION_FLAG_KEY);
     return;
@@ -802,8 +823,42 @@ class AuraSuppressionMenuApplication extends Application {
       auraIdentifier,
     };
 
+    if (!sourceDoc || !targetDoc || !normalizeAuraString(auraIdentifier)) {
+      checkbox.checked = previousSuppressed;
+      logDebug('invalid suppression payload in onTargetSuppressionChange', {
+        ...errorContext,
+        hasSourceDoc: !!sourceDoc,
+        hasTargetDoc: !!targetDoc,
+        hasAuraIdentifier: !!normalizeAuraString(auraIdentifier),
+      });
+
+      if (game.user?.isGM) {
+        ui.notifications?.error('Aura-Unterdrückung: Quelle, Ziel oder Aura-ID fehlt.');
+      }
+      return;
+    }
+
     try {
       await setAuraSuppression({ source, auraIdentifier, target, suppressed, combat });
+      const verifiedSuppressed = isAuraSuppressed({ source, auraIdentifier, target, combat });
+      if (verifiedSuppressed !== suppressed) {
+        checkbox.checked = previousSuppressed;
+        console.error('[Aura Helper] aura suppression verification mismatch', {
+          ...errorContext,
+          expectedSuppressed: suppressed,
+          verifiedSuppressed,
+        });
+        logDebug('aura suppression verification mismatch', {
+          ...errorContext,
+          expectedSuppressed: suppressed,
+          verifiedSuppressed,
+        });
+        if (game.user?.isGM) {
+          ui.notifications?.error('Aura-Unterdrückung konnte nicht verifiziert werden.');
+        }
+        return;
+      }
+
       refreshAuraSuppressionMenu();
     } catch (error) {
       checkbox.checked = previousSuppressed;
