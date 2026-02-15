@@ -729,47 +729,61 @@ function openAuraSuppressionMenu() {
   auraSuppressionMenuApplication.render(true, { focus: true });
 }
 
-function registerGmAuraControlsButton(controls) {
+function addGmAuraControlsButton(_app, html) {
   if (!game.user?.isGM) return;
 
-  const sceneControls = Array.isArray(controls)
-    ? controls
-    : Array.isArray(controls?.controls)
-      ? controls.controls
-      : null;
+  const isV13 = Number(game.release?.generation ?? 0) >= 13;
+  const existingControl = document.getElementById('pf2e-aura-helper-chat-control');
+  if (existingControl) return;
 
-  if (!sceneControls) {
-    logDebug('Could not register PF2e Aura Helper control button: unsupported scene controls payload.', {
-      payloadType: typeof controls,
-      payloadKeys: controls && typeof controls === 'object' ? Object.keys(controls) : [],
-    });
+  if (isV13) {
+    const tabsFlexcol =
+      document.getElementsByClassName('tabs')[0]?.getElementsByClassName('flexcol')[0];
+    if (!tabsFlexcol) return;
+
+    const buttonElement = document.createElement('button');
+    buttonElement.type = 'button';
+    buttonElement.className = 'pf2e-aura-helper-control';
+    buttonElement.id = 'pf2e-aura-helper-chat-control';
+    buttonElement.title = 'PF2e Aura Helper';
+
+    const iconElement = document.createElement('i');
+    iconElement.className = 'fas fa-circle-radiation';
+    iconElement.setAttribute('aria-hidden', 'true');
+    buttonElement.append(iconElement);
+
+    buttonElement.onclick = (event) => {
+      event.preventDefault();
+      openAuraSuppressionMenu();
+    };
+
+    tabsFlexcol.append(buttonElement);
     return;
   }
 
-  const preferredControlNames = ['token', 'measure'];
-  const targetControl =
-    preferredControlNames.map((name) => sceneControls.find((control) => control.name === name)).find(Boolean) ??
-    sceneControls.find((control) => Array.isArray(control.tools));
+  const htmlElement = html?.[0] ?? html;
+  const chatControlLeft =
+    htmlElement?.querySelector?.('.chat-control-icon') ??
+    htmlElement?.find?.('.chat-control-icon')?.[0] ??
+    document.getElementsByClassName('chat-control-icon')[0];
+  if (!chatControlLeft) return;
 
-  if (!targetControl) {
-    logDebug('Could not register PF2e Aura Helper control button: no target scene control found.', {
-      availableControls: sceneControls.map((control) => control.name),
-    });
-    return;
-  }
+  const buttonElement = document.createElement('a');
+  buttonElement.className = 'chat-control-icon pf2e-aura-helper-control';
+  buttonElement.id = 'pf2e-aura-helper-chat-control';
+  buttonElement.title = 'PF2e Aura Helper';
 
-  targetControl.tools ??= [];
+  const iconElement = document.createElement('i');
+  iconElement.className = 'fas fa-circle-radiation';
+  iconElement.setAttribute('aria-hidden', 'true');
+  buttonElement.append(iconElement);
 
-  if (targetControl.tools.some((tool) => tool.name === 'pf2e-aura-helper')) return;
+  buttonElement.onclick = (event) => {
+    event.preventDefault();
+    openAuraSuppressionMenu();
+  };
 
-  targetControl.tools.push({
-    name: 'pf2e-aura-helper',
-    title: 'PF2e Aura Helper',
-    icon: 'fas fa-circle-radiation',
-    button: true,
-    onClick: () => openAuraSuppressionMenu(),
-    visible: game.user.isGM,
-  });
+  chatControlLeft.insertBefore(buttonElement, chatControlLeft.firstElementChild);
 }
 
 Hooks.once('ready', () => {
@@ -794,7 +808,7 @@ Hooks.once('ready', () => {
   game.socket.on(`module.${MODULE_ID}`, handleIncomingAuraEvent);
 });
 
-Hooks.on('getSceneControlButtons', registerGmAuraControlsButton);
+Hooks.on('renderSceneNavigation', addGmAuraControlsButton);
 Hooks.on('createCombat', refreshAuraSuppressionMenu);
 Hooks.on('updateCombat', refreshAuraSuppressionMenu);
 Hooks.on('deleteCombat', refreshAuraSuppressionMenu);
