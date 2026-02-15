@@ -732,14 +732,28 @@ function openAuraSuppressionMenu() {
 function registerGmAuraControlsButton(controls) {
   if (!game.user?.isGM) return;
 
+  const sceneControls = Array.isArray(controls)
+    ? controls
+    : Array.isArray(controls?.controls)
+      ? controls.controls
+      : null;
+
+  if (!sceneControls) {
+    logDebug('Could not register PF2e Aura Helper control button: unsupported scene controls payload.', {
+      payloadType: typeof controls,
+      payloadKeys: controls && typeof controls === 'object' ? Object.keys(controls) : [],
+    });
+    return;
+  }
+
   const preferredControlNames = ['token', 'measure'];
   const targetControl =
-    preferredControlNames.map((name) => controls.find((control) => control.name === name)).find(Boolean) ??
-    controls.find((control) => Array.isArray(control.tools));
+    preferredControlNames.map((name) => sceneControls.find((control) => control.name === name)).find(Boolean) ??
+    sceneControls.find((control) => Array.isArray(control.tools));
 
   if (!targetControl) {
     logDebug('Could not register PF2e Aura Helper control button: no target scene control found.', {
-      availableControls: controls.map((control) => control.name),
+      availableControls: sceneControls.map((control) => control.name),
     });
     return;
   }
