@@ -9,9 +9,11 @@ const WINTER_SLEET_STANCE_SLUG = 'stance-winter-sleet';
 const WINTER_SLEET_EVENT_TTL_MS = 5000;
 const WINTER_SLEET_ITEM_REFRESH_DEBOUNCE_MS = 150;
 const WINTER_SLEET_RELEVANT_SLUGS = new Set([
+  WINTER_SLEET_AURA_SLUG,
   WINTER_SLEET_EFFECT_AURA_SLUG,
   WINTER_SLEET_STANCE_SLUG,
 ]);
+const SETTING_DEBUG_ENABLED = 'debugEnabled';
 const SETTING_REQUIRE_VISIBLE_ENEMIES = 'requireVisibleEnemies';
 const SETTING_PUBLIC_CHAT_MESSAGES = 'publicChatMessages';
 
@@ -47,6 +49,16 @@ function shouldRequireVisibleEnemies() {
 function shouldWhisperToGm() {
   if (!game.settings?.settings?.has(`${MODULE_ID}.${SETTING_PUBLIC_CHAT_MESSAGES}`)) return true;
   return !game.settings.get(MODULE_ID, SETTING_PUBLIC_CHAT_MESSAGES);
+}
+
+function shouldLogWinterSleetDebug() {
+  if (!game.settings?.settings?.has(`${MODULE_ID}.${SETTING_DEBUG_ENABLED}`)) return false;
+  return !!game.settings.get(MODULE_ID, SETTING_DEBUG_ENABLED);
+}
+
+function logWinterSleetDebug(...args) {
+  if (!shouldLogWinterSleetDebug()) return;
+  console.debug('[Aura Helper:Winter Sleet]', ...args);
 }
 
 function isTokenInsideAura(aura, tokenLike) {
@@ -137,6 +149,13 @@ function getWinterSleetSourcesForToken(token) {
     if (!enemy.actor || isHidden || isDefeated) return false;
     if (!enemy.actor.isEnemyOf(token.actor)) return false;
     if (shouldRequireVisibleEnemies() && !isVisibleToParty(enemy)) return false;
+    const aura = getKineticAura(enemy.actor);
+    logWinterSleetDebug('Source candidate checked', {
+      targetToken: token.id,
+      sourceToken: enemy.id,
+      auraFound: !!aura,
+      sourceSlugs: enemy.actor.itemTypes.effect.map((effect) => effect.slug),
+    });
     return (
       enemy.actor.itemTypes.effect.some(
         (e) =>
@@ -144,7 +163,7 @@ function getWinterSleetSourcesForToken(token) {
           e.slug === WINTER_SLEET_AURA_SLUG
       ) &&
       enemy.actor.itemTypes.effect.some((e) => e.slug === WINTER_SLEET_STANCE_SLUG) &&
-      getKineticAura(enemy.actor)
+      aura
     );
   });
 }
@@ -162,15 +181,18 @@ async function refreshPlayerAuras() {
 
   const active = new Map();
   for (const player of players) {
-    const hasAura = player.actor.itemTypes.effect.some(
-      (e) =>
-        e.slug === WINTER_SLEET_EFFECT_AURA_SLUG ||
-        e.slug === WINTER_SLEET_AURA_SLUG
-    );
-    const hasSleet = player.actor.itemTypes.effect.some((e) => e.slug === WINTER_SLEET_STANCE_SLUG);
-    if (!hasAura || !hasSleet) continue;
     const aura = getKineticAura(player.actor);
-    if (!aura) continue;
+    if (!aura) {
+      logWinterSleetDebug('Skipping active source without aura instance', {
+        sourceToken: player.id,
+        sourceSlugs: player.actor.itemTypes.effect.map((effect) => effect.slug),
+      });
+      continue;
+    }
+    logWinterSleetDebug('Active source registered', {
+      sourceToken: player.id,
+      auraSlug: aura.slug,
+    });
     active.set(player.id, { token: player, aura });
   }
 
@@ -186,6 +208,11 @@ async function refreshPlayerAuras() {
       const sourceId = condition.getFlag(AURA_FLAG, AURA_SOURCE_FLAG);
       const source = active.get(sourceId);
       const inRange = source && isTokenInsideAura(source.aura, token);
+      logWinterSleetDebug('Checking existing off-guard source range', {
+        token: token.id,
+        sourceId,
+        inRange: !!inRange,
+      });
       if (!inRange) await condition.delete();
     }
   }
@@ -193,7 +220,13 @@ async function refreshPlayerAuras() {
   for (const [sourceId, data] of active) {
     for (const token of tokens) {
       if (!data.token.actor.isEnemyOf(token.actor)) continue;
-      if (!isTokenInsideAura(data.aura, token)) continue;
+      const inRange = isTokenInsideAura(data.aura, token);
+      logWinterSleetDebug('Checking token against active source aura', {
+        sourceId,
+        token: token.id,
+        inRange,
+      });
+      if (!inRange) continue;
       const existing =
         token.actor.items.find(
           (i) =>
