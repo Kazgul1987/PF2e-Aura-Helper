@@ -422,6 +422,32 @@ async function setAuraSuppression({ source, auraIdentifier, target, suppressed, 
   await combat.setFlag(MODULE_ID, COMBAT_SUPPRESSION_FLAG_KEY, suppressionMap);
 }
 
+async function verifyAuraSuppressionState({
+  source,
+  auraIdentifier,
+  target,
+  suppressed,
+  combat = game.combat,
+  attempts = 3,
+  delayMs = 75,
+}) {
+  const maxAttempts = Math.max(1, Number(attempts) || 1);
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const verifiedSuppressed = isAuraSuppressed({ source, auraIdentifier, target, combat });
+    if (verifiedSuppressed === suppressed) {
+      return { success: true, verifiedSuppressed, attempt };
+    }
+
+    if (attempt < maxAttempts) {
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+
+  const verifiedSuppressed = isAuraSuppressed({ source, auraIdentifier, target, combat });
+  return { success: false, verifiedSuppressed, attempt: maxAttempts };
+}
+
 function getArrayFromUnknown(value) {
   if (Array.isArray(value)) return value;
   if (typeof value === 'string') return [value];
@@ -840,18 +866,32 @@ class AuraSuppressionMenuApplication extends Application {
 
     try {
       await setAuraSuppression({ source, auraIdentifier, target, suppressed, combat });
-      const verifiedSuppressed = isAuraSuppressed({ source, auraIdentifier, target, combat });
-      if (verifiedSuppressed !== suppressed) {
+      const verificationResult = await verifyAuraSuppressionState({
+        source,
+        auraIdentifier,
+        target,
+        suppressed,
+        combat,
+      });
+      if (!verificationResult.success) {
+        const suppressionKey = buildAuraSuppressionKey({ source, auraIdentifier, target });
+        const legacySuppressionKey = buildLegacyAuraSuppressionKey({ source, auraIdentifier, target });
         checkbox.checked = previousSuppressed;
         console.error('[Aura Helper] aura suppression verification mismatch', {
           ...errorContext,
           expectedSuppressed: suppressed,
-          verifiedSuppressed,
+          verifiedSuppressed: verificationResult.verifiedSuppressed,
+          attempts: verificationResult.attempt,
+          suppressionKey,
+          legacySuppressionKey,
         });
         logDebug('aura suppression verification mismatch', {
           ...errorContext,
           expectedSuppressed: suppressed,
-          verifiedSuppressed,
+          verifiedSuppressed: verificationResult.verifiedSuppressed,
+          attempts: verificationResult.attempt,
+          suppressionKey,
+          legacySuppressionKey,
         });
         if (game.user?.isGM) {
           ui.notifications?.error('Aura-Unterdrückung konnte nicht verifiziert werden.');
