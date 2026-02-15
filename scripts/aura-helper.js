@@ -564,160 +564,169 @@ async function handleIncomingAuraEvent(payload) {
   });
 }
 
-function escapeHtml(value) {
-  return String(value ?? '')
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#039;');
-}
-
-function getCombatAuraSuppressionMenuEntries(combat = game.combat) {
+function getCombatTokens(combat = game.combat) {
   if (!combat) return [];
-
-  const tokens = (combat.combatants ?? [])
+  return (combat.combatants ?? [])
     .map((combatant) =>
       combatant.token?.object ?? combatant.token ?? canvas.tokens?.get(combatant.tokenId) ?? null
     )
     .filter((token) => !!token?.id && !!token.actor);
+}
 
-  const entriesByKey = new Map();
+function getAuraSuppressionMenuData(combat = game.combat) {
+  if (!combat) {
+    return {
+      hasCombat: false,
+      sources: [],
+    };
+  }
+
+  const sourceMap = new Map();
+  const tokens = getCombatTokens(combat);
+
+  const registerSourceAuraTarget = ({ source, target, auraIdentifier, auraName }) => {
+    const sourceUuid = getTokenUuid(source);
+    const targetUuid = getTokenUuid(target);
+    if (!sourceUuid || !targetUuid || !normalizeAuraString(auraIdentifier)) return;
+
+    const sourceName = source?.name ?? source?.actor?.name ?? 'Unbekannte Quelle';
+    const targetName = target?.name ?? target?.actor?.name ?? 'Unbekanntes Ziel';
+    const resolvedAuraName = auraName ?? auraIdentifier;
+
+    let sourceEntry = sourceMap.get(sourceUuid);
+    if (!sourceEntry) {
+      sourceEntry = {
+        uuid: sourceUuid,
+        name: sourceName,
+        auraMap: new Map(),
+      };
+      sourceMap.set(sourceUuid, sourceEntry);
+    }
+
+    let auraEntry = sourceEntry.auraMap.get(auraIdentifier);
+    if (!auraEntry) {
+      auraEntry = {
+        id: auraIdentifier,
+        identifier: auraIdentifier,
+        name: resolvedAuraName,
+        targetMap: new Map(),
+      };
+      sourceEntry.auraMap.set(auraIdentifier, auraEntry);
+    }
+
+    if (auraEntry.targetMap.has(targetUuid)) return;
+    auraEntry.targetMap.set(targetUuid, {
+      uuid: targetUuid,
+      name: targetName,
+      isSuppressed: isAuraSuppressed({ source, auraIdentifier, target, combat }),
+    });
+  };
+
   for (const target of tokens) {
     const auraChecks = getStandardAuraChecks(target);
     for (const { source, aura, auraIdentifier } of auraChecks) {
-      const suppressionKey = buildAuraSuppressionKey({ source, auraIdentifier, target });
-      if (!suppressionKey) continue;
-      if (entriesByKey.has(suppressionKey)) continue;
-      entriesByKey.set(suppressionKey, {
-        suppressionKey,
+      registerSourceAuraTarget({
         source,
         target,
         auraIdentifier,
         auraName: aura?.name ?? aura?.slug ?? auraIdentifier,
-        sourceName: source?.name ?? source?.actor?.name ?? 'Unbekannte Quelle',
-        targetName: target?.name ?? target?.actor?.name ?? 'Unbekanntes Ziel',
       });
     }
-  }
 
-  for (const target of tokens) {
     for (const source of getWinterSleetSources()) {
       if (!source?.actor?.isEnemyOf(target.actor)) continue;
-      const auraIdentifier = WINTER_SLEET_AURA_SLUG;
-      const suppressionKey = buildAuraSuppressionKey({ source, auraIdentifier, target });
-      if (!suppressionKey || entriesByKey.has(suppressionKey)) continue;
-      entriesByKey.set(suppressionKey, {
-        suppressionKey,
+      registerSourceAuraTarget({
         source,
         target,
-        auraIdentifier,
+        auraIdentifier: WINTER_SLEET_AURA_SLUG,
         auraName: 'Winter Sleet',
-        sourceName: source?.name ?? source?.actor?.name ?? 'Unbekannte Quelle',
-        targetName: target?.name ?? target?.actor?.name ?? 'Unbekanntes Ziel',
       });
     }
   }
 
-  return [...entriesByKey.values()].sort((a, b) =>
-    `${a.sourceName}|${a.targetName}|${a.auraName}`.localeCompare(`${b.sourceName}|${b.targetName}|${b.auraName}`)
-  );
+  const sources = [...sourceMap.values()]
+    .map((sourceEntry) => ({
+      uuid: sourceEntry.uuid,
+      name: sourceEntry.name,
+      auras: [...sourceEntry.auraMap.values()]
+        .map((auraEntry) => ({
+          id: auraEntry.id,
+          identifier: auraEntry.identifier,
+          name: auraEntry.name,
+          targets: [...auraEntry.targetMap.values()].sort((a, b) => a.name.localeCompare(b.name)),
+        }))
+        .sort((a, b) => `${a.name}|${a.identifier}`.localeCompare(`${b.name}|${b.identifier}`)),
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  return {
+    hasCombat: true,
+    sources,
+  };
 }
 
-function buildAuraSuppressionMenuContent(entries, combat = game.combat) {
-  if (!combat) {
-    return '<p>Kein aktiver Kampf gefunden.</p>';
+class AuraSuppressionMenuApplication extends Application {
+  static get defaultOptions() {
+    return foundry.utils.mergeObject(super.defaultOptions, {
+      id: `${MODULE_ID}-suppression-menu`,
+      title: 'PF2e Aura Helper',
+      template: `modules/${MODULE_ID}/templates/aura-helper-tab.hbs`,
+      classes: ['pf2e-aura-helper', 'pf2e-aura-helper-tab-window'],
+      width: 520,
+      height: 'auto',
+      resizable: true,
+      popOut: true,
+    });
   }
 
-  if (entries.length === 0) {
-    return '<p>Keine Aura-Kombinationen im aktiven Kampf gefunden.</p>';
+  async getData() {
+    return getAuraSuppressionMenuData(game.combat);
   }
 
-  const rows = entries
-    .map((entry) => {
-      const checked = isAuraSuppressed({
-        source: entry.source,
-        auraIdentifier: entry.auraIdentifier,
-        target: entry.target,
-        combat,
-      });
-      return `<tr>
-        <td>${escapeHtml(entry.sourceName)}</td>
-        <td>${escapeHtml(entry.auraName)}</td>
-        <td>${escapeHtml(entry.targetName)}</td>
-        <td style="text-align:center;">
-          <input
-            type="checkbox"
-            class="pf2e-aura-helper-suppression-checkbox"
-            data-source-id="${escapeHtml(entry.source.id)}"
-            data-target-id="${escapeHtml(entry.target.id)}"
-            data-aura-identifier="${escapeHtml(entry.auraIdentifier)}"
-            ${checked ? 'checked' : ''}
-          />
-        </td>
-      </tr>`;
-    })
-    .join('');
+  activateListeners(html) {
+    super.activateListeners(html);
 
-  return `<p>Unterdrücke einzelne Aura-Erinnerungen für den aktiven Kampf.</p>
-    <div style="max-height: 420px; overflow: auto;">
-      <table style="width: 100%; border-collapse: collapse;">
-        <thead>
-          <tr>
-            <th style="text-align:left;">Quelle</th>
-            <th style="text-align:left;">Aura</th>
-            <th style="text-align:left;">Ziel</th>
-            <th style="text-align:center;">Unterdrücken</th>
-          </tr>
-        </thead>
-        <tbody>${rows}</tbody>
-      </table>
-    </div>`;
+    const root = html?.[0] ?? html;
+    root?.addEventListener('change', (event) => this.onTargetSuppressionChange(event));
+  }
+
+  async onTargetSuppressionChange(event) {
+    const checkbox = event.target?.closest?.('.aura-helper-tab__target-checkbox');
+    if (!checkbox) return;
+
+    const combat = game.combat;
+    if (!combat) return;
+
+    const sourceDoc = await fromUuid(checkbox.dataset.sourceUuid);
+    const targetDoc = await fromUuid(checkbox.dataset.targetUuid);
+    const source = sourceDoc?.object ?? sourceDoc;
+    const target = targetDoc?.object ?? targetDoc;
+    const auraIdentifier = checkbox.dataset.auraId;
+    const suppressed = !!checkbox.checked;
+
+    await setAuraSuppression({ source, auraIdentifier, target, suppressed, combat });
+    logDebug('updated aura suppression', {
+      combatId: combat?.id ?? null,
+      sourceUuid: checkbox.dataset.sourceUuid ?? null,
+      targetUuid: checkbox.dataset.targetUuid ?? null,
+      auraIdentifier,
+      suppressed,
+    });
+  }
+}
+
+let auraSuppressionMenuApplication = null;
+
+function refreshAuraSuppressionMenu() {
+  if (!auraSuppressionMenuApplication?.rendered) return;
+  auraSuppressionMenuApplication.render(false);
 }
 
 function openAuraSuppressionMenu() {
   if (!game.user?.isGM) return;
 
-  if (typeof Dialog !== 'undefined') {
-    const combat = game.combat;
-    const entries = getCombatAuraSuppressionMenuEntries(combat);
-    new Dialog({
-      title: 'PF2e Aura Helper',
-      content: buildAuraSuppressionMenuContent(entries, combat),
-      buttons: {
-        close: {
-          icon: '<i class="fas fa-times"></i>',
-          label: 'Schließen',
-        },
-      },
-      default: 'close',
-      render: (html) => {
-        const root = html?.[0] ?? html;
-        root?.querySelectorAll?.('.pf2e-aura-helper-suppression-checkbox')?.forEach((checkbox) => {
-          checkbox.addEventListener('change', async (event) => {
-            const sourceId = event.currentTarget.dataset.sourceId;
-            const targetId = event.currentTarget.dataset.targetId;
-            const auraIdentifier = event.currentTarget.dataset.auraIdentifier;
-            const source = canvas.tokens.get(sourceId);
-            const target = canvas.tokens.get(targetId);
-            const suppressed = !!event.currentTarget.checked;
-
-            await setAuraSuppression({ source, auraIdentifier, target, suppressed, combat });
-            logDebug('updated aura suppression', {
-              combatId: combat?.id ?? null,
-              sourceId,
-              targetId,
-              auraIdentifier,
-              suppressed,
-            });
-          });
-        });
-      },
-    }).render(true);
-    return;
-  }
-
-  ui.notifications?.info('Aura-Unterdrückungsmenü ist derzeit nicht verfügbar.');
+  auraSuppressionMenuApplication ??= new AuraSuppressionMenuApplication();
+  auraSuppressionMenuApplication.render(true, { focus: true });
 }
 
 function addGmAuraControlsButton(_app, html) {
@@ -772,6 +781,15 @@ Hooks.once('ready', () => {
 });
 
 Hooks.on('renderSceneControls', addGmAuraControlsButton);
+Hooks.on('createCombat', refreshAuraSuppressionMenu);
+Hooks.on('updateCombat', refreshAuraSuppressionMenu);
+Hooks.on('deleteCombat', refreshAuraSuppressionMenu);
+Hooks.on('createCombatant', refreshAuraSuppressionMenu);
+Hooks.on('updateCombatant', refreshAuraSuppressionMenu);
+Hooks.on('deleteCombatant', refreshAuraSuppressionMenu);
+Hooks.on('createToken', refreshAuraSuppressionMenu);
+Hooks.on('updateToken', refreshAuraSuppressionMenu);
+Hooks.on('deleteToken', refreshAuraSuppressionMenu);
 
 Hooks.once('init', () => {
   patchChatMessageUserAlias();
