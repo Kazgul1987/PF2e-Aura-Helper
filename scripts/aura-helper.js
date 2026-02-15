@@ -758,12 +758,38 @@ class AuraSuppressionMenuApplication extends Application {
     const target = targetDoc?.object ?? targetDoc;
     const auraIdentifier = checkbox.dataset.auraId;
     const suppressed = !!checkbox.checked;
-
-    await setAuraSuppression({ source, auraIdentifier, target, suppressed, combat });
-    logDebug('updated aura suppression', {
+    const previousSuppressed = !suppressed;
+    const errorContext = {
       combatId: combat?.id ?? null,
       sourceUuid: checkbox.dataset.sourceUuid ?? null,
       targetUuid: checkbox.dataset.targetUuid ?? null,
+      auraIdentifier,
+    };
+
+    try {
+      await setAuraSuppression({ source, auraIdentifier, target, suppressed, combat });
+      refreshAuraSuppressionMenu();
+    } catch (error) {
+      checkbox.checked = previousSuppressed;
+      console.error('[Aura Helper] failed to update aura suppression', {
+        ...errorContext,
+        suppressed,
+        error,
+      });
+      logDebug('failed to update aura suppression', {
+        ...errorContext,
+        suppressed,
+        error,
+      });
+
+      if (game.user?.isGM) {
+        ui.notifications?.error('Aura-Unterdrückung konnte nicht gespeichert werden.');
+      }
+      return;
+    }
+
+    logDebug('updated aura suppression', {
+      ...errorContext,
       auraIdentifier,
       suppressed,
     });
