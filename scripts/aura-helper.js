@@ -502,6 +502,56 @@ async function handleIncomingAuraEvent(payload) {
   });
 }
 
+function openAuraSuppressionMenu() {
+  if (!game.user?.isGM) return;
+
+  if (typeof Dialog !== 'undefined') {
+    new Dialog({
+      title: 'PF2e Aura Helper',
+      content: '<p>Hier können zukünftig Optionen zur Aura-Unterdrückung verwaltet werden.</p>',
+      buttons: {
+        close: {
+          icon: '<i class="fas fa-times"></i>',
+          label: 'Schließen',
+        },
+      },
+      default: 'close',
+    }).render(true);
+    return;
+  }
+
+  ui.notifications?.info('Aura-Unterdrückungsmenü ist derzeit nicht verfügbar.');
+}
+
+function addGmAuraControlsButton(_app, html) {
+  if (!game.user?.isGM) return;
+
+  const controlsRoot = document.querySelector('#controls');
+  if (!controlsRoot) return;
+
+  const htmlElement = html?.[0] ?? html;
+  const hookScopedContainer =
+    htmlElement?.querySelector?.('.main-controls, .control-tools') ??
+    htmlElement?.find?.('.main-controls, .control-tools')?.[0];
+  const controlsContainer =
+    hookScopedContainer ?? controlsRoot.querySelector('.main-controls, .control-tools');
+  if (!controlsContainer) return;
+
+  if (controlsContainer.querySelector('.pf2e-aura-helper-control')) return;
+
+  const auraButton = document.createElement('li');
+  auraButton.classList.add('scene-control', 'pf2e-aura-helper-control');
+  auraButton.dataset.control = 'pf2e-aura-helper';
+  auraButton.title = 'PF2e Aura Helper';
+  auraButton.innerHTML = '<i class="fas fa-circle-radiation"></i>';
+  auraButton.addEventListener('click', (event) => {
+    event.preventDefault();
+    openAuraSuppressionMenu();
+  });
+
+  controlsContainer.appendChild(auraButton);
+}
+
 Hooks.once('ready', () => {
   if (
     game.settings.get(MODULE_ID, SETTING_DEBUG_ENABLED) === true &&
@@ -523,6 +573,8 @@ Hooks.once('ready', () => {
 
   game.socket.on(`module.${MODULE_ID}`, handleIncomingAuraEvent);
 });
+
+Hooks.on('renderSceneControls', addGmAuraControlsButton);
 
 Hooks.once('init', () => {
   patchChatMessageUserAlias();
