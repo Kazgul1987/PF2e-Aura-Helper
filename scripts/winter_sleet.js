@@ -282,15 +282,20 @@ Hooks.on('pf2e.startTurn', async () => {
 });
 
 Hooks.on('updateToken', async (tokenDoc, change) => {
-  if (game.user.isGM) return;
   if (change.x === undefined && change.y === undefined) return;
   if (!hasKineticSleetAura()) return;
 
   const token = tokenDoc.object;
-  if (!token || !isResponsibleOwnerClient(token)) return;
+  if (!token) return;
+
+  if (game.user.isGM) {
+    scheduleWinterSleetRefresh();
+    return;
+  }
+
+  if (!isResponsibleOwnerClient(token)) return;
   const partyMembers = game.actors.party?.members ?? [];
   const isPartyMember = partyMembers.some((member) => member.id === token.actor?.id);
-  if (!isPartyMember) return;
 
   const sources = getWinterSleetSourcesForToken(token);
 
@@ -314,6 +319,7 @@ Hooks.on('updateToken', async (tokenDoc, change) => {
   movementStarts.delete(token.id);
 
   for (const source of sources) {
+    if (!isPartyMember) continue;
     const aura = source.actor.auras?.get(WINTER_SLEET_AURA_SLUG);
     const kineticAura = aura ?? getKineticAura(source.actor);
     if (!kineticAura) continue;
