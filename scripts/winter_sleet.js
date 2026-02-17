@@ -27,6 +27,13 @@ const WINTER_SLEET_RELEVANT_SLUGS = new Set([
   WINTER_SLEET_STANCE_SLUG,
 ]);
 const SETTING_DEBUG_ENABLED = 'debugEnabled';
+const SETTING_LOG_LEVEL = 'logLevel';
+const LOG_LEVELS = {
+  OFF: 'off',
+  INFO: 'info',
+  DEBUG: 'debug',
+  WINTER_SLEET: 'winter-sleet',
+};
 const SETTING_REQUIRE_VISIBLE_ENEMIES = 'requireVisibleEnemies';
 const SETTING_PUBLIC_CHAT_MESSAGES = 'publicChatMessages';
 
@@ -64,9 +71,20 @@ function shouldWhisperToGm() {
   return !game.settings.get(MODULE_ID, SETTING_PUBLIC_CHAT_MESSAGES);
 }
 
+function getLogLevel() {
+  const key = `${MODULE_ID}.${SETTING_LOG_LEVEL}`;
+  if (game.settings?.settings?.has(key)) {
+    const configuredLogLevel = game.settings.get(MODULE_ID, SETTING_LOG_LEVEL);
+    if (Object.values(LOG_LEVELS).includes(configuredLogLevel)) return configuredLogLevel;
+  }
+
+  if (!game.settings?.settings?.has(`${MODULE_ID}.${SETTING_DEBUG_ENABLED}`)) return LOG_LEVELS.OFF;
+  return game.settings.get(MODULE_ID, SETTING_DEBUG_ENABLED) ? LOG_LEVELS.DEBUG : LOG_LEVELS.OFF;
+}
+
 function shouldLogWinterSleetDebug() {
-  if (!game.settings?.settings?.has(`${MODULE_ID}.${SETTING_DEBUG_ENABLED}`)) return false;
-  return !!game.settings.get(MODULE_ID, SETTING_DEBUG_ENABLED);
+  const logLevel = getLogLevel();
+  return logLevel === LOG_LEVELS.DEBUG || logLevel === LOG_LEVELS.WINTER_SLEET;
 }
 
 function logWinterSleetDebug(...args) {
@@ -272,7 +290,7 @@ async function refreshPlayerAuras() {
       continue;
     }
 
-    logWinterSleetDebug('Active source registered', {
+    logWinterSleetDebug('Kinetic Aura erkannt + Winter Sleet Stance aktiv', {
       sourceToken: token.id,
       auraSlug: aura.slug,
       hasAuraSourceItem,
@@ -313,6 +331,11 @@ async function refreshPlayerAuras() {
         inRange,
       });
       if (!inRange) continue;
+      logWinterSleetDebug('Gegner in Winter-Sleet-Aura erkannt', {
+        sourceId,
+        sourceToken: data.token.id,
+        enemyToken: token.id,
+      });
       const existing =
         token.actor.items.find(
           (i) =>
@@ -326,6 +349,11 @@ async function refreshPlayerAuras() {
       condition.flags ??= {};
       condition.flags[AURA_FLAG] = { [AURA_SOURCE_FLAG]: sourceId };
       await token.actor.createEmbeddedDocuments('Item', [condition]);
+      logWinterSleetDebug('Off-guard appliziert durch Winter Sleet', {
+        sourceId,
+        sourceToken: data.token.id,
+        enemyToken: token.id,
+      });
     }
   }
 }
