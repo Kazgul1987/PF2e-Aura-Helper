@@ -402,7 +402,6 @@ Hooks.on('pf2e.startTurn', async () => {
 
 Hooks.on('updateToken', async (tokenDoc, change) => {
   if (change.x === undefined && change.y === undefined) return;
-  if (!hasKineticSleetAura()) return;
 
   const token = tokenDoc.object;
   if (!token) return;
@@ -411,6 +410,8 @@ Hooks.on('updateToken', async (tokenDoc, change) => {
     scheduleWinterSleetRefresh();
     return;
   }
+
+  if (!hasKineticSleetAura()) return;
 
   if (!isResponsibleOwnerClient(token)) return;
   const partyMembers = game.actors.party?.members ?? [];
