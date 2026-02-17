@@ -31,6 +31,7 @@ const LOG_LEVELS = {
   OFF: 'off',
   INFO: 'info',
   DEBUG: 'debug',
+  WINTER_SLEET: 'winter-sleet',
 };
 const loggedAuraTraitScanByCombat = new Set();
 
@@ -70,12 +71,14 @@ function getLogLevel() {
 }
 
 function logDebug(...args) {
+  if (getLogLevel() === LOG_LEVELS.WINTER_SLEET) return;
   if (getLogLevel() !== LOG_LEVELS.DEBUG) return;
   console.debug('[Aura Helper]', ...args);
 }
 
 function logInfo(...args) {
   const logLevel = getLogLevel();
+  if (logLevel === LOG_LEVELS.WINTER_SLEET) return;
   if (logLevel !== LOG_LEVELS.INFO && logLevel !== LOG_LEVELS.DEBUG) return;
   console.info('[Aura Helper]', ...args);
 }
@@ -1173,6 +1176,7 @@ Hooks.once('init', () => {
       [LOG_LEVELS.OFF]: 'Off',
       [LOG_LEVELS.INFO]: 'Info',
       [LOG_LEVELS.DEBUG]: 'Debug',
+      [LOG_LEVELS.WINTER_SLEET]: 'Winter Sleet',
     },
     default: LOG_LEVELS.OFF,
   });
