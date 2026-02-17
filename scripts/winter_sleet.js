@@ -188,11 +188,13 @@ function hasKineticSleetAura() {
     if (!token.actor) return false;
     const sourceEffects = collectWinterSleetSourceDebugEffects(token.actor);
     const hasAura = token.actor.itemTypes.effect.some((effect) => isWinterSleetAuraItem(effect));
-    const hasStance = token.actor.itemTypes.effect.some((effect) => isWinterSleetStanceItem(effect));
+    const hasStance = hasWinterSleetStance(token.actor);
+    const hasStanceSourceItem = token.actor.itemTypes.effect.some((effect) => isWinterSleetStanceItem(effect));
     logWinterSleetDebug('hasKineticSleetAura source candidate', {
       sourceToken: token.id,
       hasAura,
       hasStance,
+      hasStanceSourceItem,
       sourceEffects,
     });
     return (
@@ -234,13 +236,15 @@ function getWinterSleetSourcesForToken(token) {
     const aura = getKineticAura(enemy.actor);
     const sourceEffects = collectWinterSleetSourceDebugEffects(enemy.actor);
     const hasAura = enemy.actor.itemTypes.effect.some((effect) => isWinterSleetAuraItem(effect));
-    const hasStance = enemy.actor.itemTypes.effect.some((effect) => isWinterSleetStanceItem(effect));
+    const hasStance = hasWinterSleetStance(enemy.actor);
+    const hasStanceSourceItem = enemy.actor.itemTypes.effect.some((effect) => isWinterSleetStanceItem(effect));
     logWinterSleetDebug('Source candidate checked', {
       targetToken: token.id,
       sourceToken: enemy.id,
       auraFound: !!aura,
       hasAura,
       hasStance,
+      hasStanceSourceItem,
       sourceEffects,
     });
     return hasAura && hasStance && aura;
@@ -276,7 +280,8 @@ async function refreshPlayerAuras() {
     const hasAuraSourceItem = token.actor.itemTypes.effect.some((effect) => isWinterSleetAuraItem(effect));
     const hasStanceSourceItem = token.actor.itemTypes.effect.some((effect) => isWinterSleetStanceItem(effect));
     if (!hasAuraSourceItem) reasons.push('missing-aura-effect-item');
-    if (!hasStanceSourceItem) reasons.push('missing-stance-effect-item');
+    const hasStanceFallback = hasStance || hasStanceSourceItem;
+    if (!hasStanceFallback) reasons.push('missing-stance-effect-item-and-fallback');
 
     if (reasons.length > 0) {
       logWinterSleetDebug('Skipping active source candidate', {
@@ -284,6 +289,7 @@ async function refreshPlayerAuras() {
         reasons,
         hasAuraSourceItem,
         hasStanceSourceItem,
+        hasStanceFallback,
         auraSlug: aura?.slug ?? null,
         sourceEffects,
       });
@@ -295,6 +301,7 @@ async function refreshPlayerAuras() {
       auraSlug: aura.slug,
       hasAuraSourceItem,
       hasStanceSourceItem,
+      hasStanceFallback,
       sourceEffects,
     });
     active.set(token.id, { token, aura });
