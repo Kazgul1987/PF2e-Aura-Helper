@@ -39,6 +39,7 @@ const SETTING_PUBLIC_CHAT_MESSAGES = 'publicChatMessages';
 
 const movementStarts = new Map();
 const recentWinterSleetEvents = new Map();
+const pendingMovementCompletions = new Map();
 let pendingWinterSleetRefresh = null;
 
 function getWinterSleetEventKey({ type, tokenId, sourceId, round, turn }) {
@@ -92,11 +93,99 @@ function logWinterSleetDebug(...args) {
   console.debug('[Aura Helper:Winter Sleet]', ...args);
 }
 
-function isTokenInsideAura(aura, tokenLike) {
-  if (!aura || typeof aura.containsToken !== 'function' || !tokenLike) return false;
-  const tokenOrDocument = tokenLike.document ?? tokenLike;
-  if (!tokenOrDocument) return false;
-  return !!aura.containsToken(tokenOrDocument);
+function getCenterForTokenLike(tokenLike) {
+  if (!tokenLike) return null;
+  if (tokenLike.center) return tokenLike.center;
+
+  const document = tokenLike.document ?? tokenLike;
+  if (document?.x === undefined || document?.y === undefined) return null;
+
+  const gridSize = canvas.grid?.size ?? 1;
+  const width = (document.width ?? tokenLike.w ?? 1) * gridSize;
+  const height = (document.height ?? tokenLike.h ?? 1) * gridSize;
+  return {
+    x: document.x + width / 2,
+    y: document.y + height / 2,
+  };
+}
+
+function getTokenBaseRadiusInGridUnits(tokenLike) {
+  if (!tokenLike) return 0;
+
+  const document = tokenLike.document ?? tokenLike;
+  const gridSizePx = canvas.grid?.size;
+  if (!gridSizePx) return 0;
+
+  const widthSquares = Number(document.width ?? tokenLike.w ?? 1);
+  const heightSquares = Number(document.height ?? tokenLike.h ?? 1);
+  if (!Number.isFinite(widthSquares) || !Number.isFinite(heightSquares)) return 0;
+
+  const widthPx = widthSquares * gridSizePx;
+  const heightPx = heightSquares * gridSizePx;
+  const baseRadiusPx = Math.max(widthPx, heightPx) / 2;
+  return canvas.grid.measureDistance({ x: 0, y: 0 }, { x: baseRadiusPx, y: 0 });
+}
+
+function getAuraRangeCheck(aura, source, tokenLike) {
+  if (!aura || !source || !tokenLike) {
+    return { distance: null, radius: null, inRange: false, usedContainsToken: false };
+  }
+
+  const tokenDocument = tokenLike.document ?? tokenLike;
+  const containsTokenResult =
+    typeof aura.containsToken === 'function' && tokenDocument ? !!aura.containsToken(tokenDocument) : false;
+
+  const radius = Number(aura.radius);
+  const tokenCenter = getCenterForTokenLike(tokenLike);
+  const sourceCenter = getCenterForTokenLike(source);
+
+  if (Number.isFinite(radius) && tokenCenter && sourceCenter) {
+    const centerDistance = canvas.grid.measureDistance(tokenCenter, sourceCenter);
+    const sourceBaseRadiusGrid = getTokenBaseRadiusInGridUnits(source);
+    const targetBaseRadiusGrid = getTokenBaseRadiusInGridUnits(tokenLike);
+    const distance = Math.max(0, centerDistance - sourceBaseRadiusGrid - targetBaseRadiusGrid);
+    return {
+      distance,
+      radius,
+      inRange: containsTokenResult || distance <= radius,
+      usedContainsToken: containsTokenResult,
+    };
+  }
+
+  return {
+    distance: null,
+    radius: Number.isFinite(radius) ? radius : null,
+    inRange: containsTokenResult,
+    usedContainsToken: containsTokenResult,
+  };
+}
+
+function isTokenInsideAura(aura, source, tokenLike) {
+  return getAuraRangeCheck(aura, source, tokenLike).inRange;
+}
+
+function getTokenDocumentAtChange(tokenDoc, change) {
+  if (!tokenDoc) return null;
+  if (change.x === undefined && change.y === undefined) return tokenDoc;
+  return tokenDoc.clone(
+    {
+      x: change.x ?? tokenDoc.x,
+      y: change.y ?? tokenDoc.y,
+    },
+    { keepId: true }
+  );
+}
+
+function scheduleMovementCompletion(token, task) {
+  const existing = pendingMovementCompletions.get(token.id);
+  if (existing) clearTimeout(existing);
+
+  const timeoutId = setTimeout(async () => {
+    pendingMovementCompletions.delete(token.id);
+    await task();
+  }, 0);
+
+  pendingMovementCompletions.set(token.id, timeoutId);
 }
 
 function getDocumentAtMovementStart(token) {
@@ -318,11 +407,14 @@ async function refreshPlayerAuras() {
     for (const condition of conditions) {
       const sourceId = condition.getFlag(AURA_FLAG, AURA_SOURCE_FLAG);
       const source = active.get(sourceId);
-      const inRange = source && isTokenInsideAura(source.aura, token);
+      const rangeCheck = source ? getAuraRangeCheck(source.aura, source.token, token) : null;
+      const inRange = rangeCheck?.inRange ?? false;
       logWinterSleetDebug('Checking existing off-guard source range', {
         token: token.id,
         sourceId,
-        inRange: !!inRange,
+        distance: rangeCheck?.distance ?? null,
+        radius: rangeCheck?.radius ?? null,
+        inRange,
       });
       if (!inRange) await condition.delete();
     }
@@ -331,10 +423,13 @@ async function refreshPlayerAuras() {
   for (const [sourceId, data] of active) {
     for (const token of tokens) {
       if (!data.token.actor.isEnemyOf(token.actor)) continue;
-      const inRange = isTokenInsideAura(data.aura, token);
+      const rangeCheck = getAuraRangeCheck(data.aura, data.token, token);
+      const inRange = rangeCheck.inRange;
       logWinterSleetDebug('Checking token against active source aura', {
         sourceId,
         token: token.id,
+        distance: rangeCheck.distance,
+        radius: rangeCheck.radius,
         inRange,
       });
       if (!inRange) continue;
@@ -440,6 +535,7 @@ Hooks.on('updateToken', async (tokenDoc, change) => {
 
   const token = tokenDoc.object;
   if (!token) return;
+  const changedTokenDocument = getTokenDocumentAtChange(tokenDoc, change);
 
   if (game.user.isGM) {
     scheduleWinterSleetRefresh();
@@ -462,7 +558,7 @@ Hooks.on('updateToken', async (tokenDoc, change) => {
         const aura = source.actor.auras?.get(WINTER_SLEET_AURA_SLUG);
         const kineticAura = aura ?? getKineticAura(source.actor);
         if (!kineticAura) continue;
-        startMap.set(source.id, isTokenInsideAura(kineticAura, movementStartDocument));
+        startMap.set(source.id, isTokenInsideAura(kineticAura, source, movementStartDocument));
       }
       movementStarts.set(token.id, startMap);
     }
@@ -470,23 +566,35 @@ Hooks.on('updateToken', async (tokenDoc, change) => {
     return;
   }
 
-  const startMap = movementStarts.get(token.id) ?? new Map();
-  movementStarts.delete(token.id);
+  scheduleMovementCompletion(token, async () => {
+    const startMap = movementStarts.get(token.id) ?? new Map();
+    movementStarts.delete(token.id);
 
-  for (const source of sources) {
-    if (!isPartyMember) continue;
-    const aura = source.actor.auras?.get(WINTER_SLEET_AURA_SLUG);
-    const kineticAura = aura ?? getKineticAura(source.actor);
-    if (!kineticAura) continue;
-    const startedInside = startMap.get(source.id) ?? false;
-    const endedInside = isTokenInsideAura(kineticAura, token);
+    for (const source of sources) {
+      if (!isPartyMember) continue;
+      const aura = source.actor.auras?.get(WINTER_SLEET_AURA_SLUG);
+      const kineticAura = aura ?? getKineticAura(source.actor);
+      if (!kineticAura) continue;
+      const startedInside = startMap.get(source.id) ?? false;
+      const endRangeCheck = getAuraRangeCheck(kineticAura, source, changedTokenDocument ?? token.document);
+      const endedInside = endRangeCheck.inRange;
 
-    if (startedInside || endedInside) {
-      emitWinterSleetBalance({ tokenId: token.id, sourceId: source.id });
+      logWinterSleetDebug('Winter Sleet movement range comparison', {
+        token: token.id,
+        sourceId: source.id,
+        distance: endRangeCheck.distance,
+        radius: endRangeCheck.radius,
+        inRange: endedInside,
+        startedInside,
+      });
+
+      if (startedInside || endedInside) {
+        emitWinterSleetBalance({ tokenId: token.id, sourceId: source.id });
+      }
     }
-  }
 
-  emitWinterSleetRefresh();
+    emitWinterSleetRefresh();
+  });
 });
 
 Hooks.on('createItem', (item) => {
@@ -510,10 +618,17 @@ Hooks.on('updateItem', (item, changed) => {
 
 Hooks.on('deleteToken', (tokenDoc) => {
   movementStarts.delete(tokenDoc.id);
+  const pending = pendingMovementCompletions.get(tokenDoc.id);
+  if (pending) clearTimeout(pending);
+  pendingMovementCompletions.delete(tokenDoc.id);
 });
 
 Hooks.on('canvasReady', () => {
   movementStarts.clear();
+  for (const timeoutId of pendingMovementCompletions.values()) {
+    clearTimeout(timeoutId);
+  }
+  pendingMovementCompletions.clear();
   if (!game.user.isGM) return;
   refreshPlayerAuras();
 });
