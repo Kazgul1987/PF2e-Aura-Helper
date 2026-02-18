@@ -16,6 +16,9 @@ const AURA_EVENT_TTL_MS = 5000;
 const WINTER_SLEET_AURA_SLUG = 'kinetic-aura';
 const WINTER_SLEET_EFFECT_SLUG = 'effect-kinetic-aura';
 const WINTER_SLEET_STANCE_SLUG = 'stance-winter-sleet';
+const AURA_ITEM_SLUG_MAPPINGS = {
+  [WINTER_SLEET_AURA_SLUG]: [WINTER_SLEET_STANCE_SLUG, WINTER_SLEET_EFFECT_SLUG],
+};
 const NYMPHS_GRACE_AURA_SLUG = 'nymphs-grace';
 const NYMPHS_GRACE_NAME_RE = /nymph['’]s\s+grace/i;
 const WINTER_SLEET_TRIGGER_ON_MOVE_WITHIN = true;
@@ -1617,41 +1620,124 @@ async function handleAura({ token, enemy, aura, auraIdentifier, originItem: prov
   }
   const effect = aura.effects?.[0];
   logDebug('aura effect', effect);
+
+  const findEnemyItemBySlug = (slug) => {
+    if (!slug) return null;
+    return (
+      enemy.actor.items.find((i) => i.slug === slug || i.system?.slug === slug) ?? null
+    );
+  };
+
+  const getAuraSourceOriginUuid = () => {
+    const directAura =
+      enemy.actor.auras?.get?.(aura.slug) ??
+      (auraIdentifier ? enemy.actor.auras?.get?.(auraIdentifier) : null) ??
+      null;
+
+    const directAuraEffect = directAura?.effects?.[0];
+    if (directAuraEffect) {
+      const directAuraOriginUuid =
+        directAuraEffect.origin ??
+        directAuraEffect.sourceId ??
+        directAuraEffect.system?.context?.origin?.uuid ??
+        null;
+      if (directAuraOriginUuid) return directAuraOriginUuid;
+    }
+
+    const effectOrigin =
+      enemy.actor.itemTypes?.effect
+        ?.find((actorEffect) => {
+          const effectSlug = actorEffect.slug ?? actorEffect.system?.slug;
+          return effectSlug === aura.slug || effectSlug === auraIdentifier;
+        })
+        ?.getFlag?.('pf2e', 'origin') ??
+      enemy.actor.itemTypes?.effect
+        ?.find((actorEffect) => {
+          const effectSlug = actorEffect.slug ?? actorEffect.system?.slug;
+          return effectSlug === aura.slug || effectSlug === auraIdentifier;
+        })?.system?.context?.origin?.uuid ??
+      null;
+
+    if (effectOrigin) return effectOrigin;
+
+    return (
+      enemy.actor.flags?.pf2e?.auras?.[aura.slug]?.origin ??
+      (auraIdentifier ? enemy.actor.flags?.pf2e?.auras?.[auraIdentifier]?.origin : null) ??
+      null
+    );
+  };
+
   let originUuid =
     effect?.origin ??
     effect?.sourceId ??
     effect?.system?.context?.origin?.uuid ??
     null;
   let originItem = providedOriginItem;
+  let matchedBy = null;
   if (!originUuid && originItem) {
     originUuid = originItem.uuid ?? null;
   }
 
   if (!originUuid) {
-    originItem = enemy.actor.items.find((i) => i.slug === aura.slug) ?? null;
-    if (!originItem && auraIdentifier) {
-      originItem = enemy.actor.items.find((i) => i.slug === auraIdentifier) ?? null;
+    if (auraIdentifier) {
+      originItem = findEnemyItemBySlug(auraIdentifier);
       logDebug('searched enemy items by fallback identifier', {
         auraIdentifier,
         item: originItem,
       });
+      if (originItem) matchedBy = 'identifier';
     }
+
+    if (!originItem) {
+      originItem = findEnemyItemBySlug(aura.slug);
+      if (originItem) matchedBy = 'slug';
+    }
+
     logDebug('searched enemy items by slug', {
       slug: aura.slug,
       item: originItem,
     });
+
+    if (!originItem) {
+      const mappedSlugs = [
+        ...(AURA_ITEM_SLUG_MAPPINGS[aura.slug] ?? []),
+        ...(auraIdentifier ? AURA_ITEM_SLUG_MAPPINGS[auraIdentifier] ?? [] : []),
+      ];
+      for (const mappedSlug of mappedSlugs) {
+        originItem = findEnemyItemBySlug(mappedSlug);
+        if (originItem) {
+          matchedBy = 'mapping';
+          break;
+        }
+      }
+      logDebug('searched enemy items by mapping', {
+        auraSlug: aura.slug,
+        auraIdentifier,
+        mappedSlugs,
+        item: originItem,
+      });
+    }
+
     if (!originItem) {
       const fallbackSlug = aura.slug ?? auraIdentifier ?? 'unknown-aura';
       const searchName = effect?.name ?? fallbackSlug.replace(/-/g, ' ');
       originItem = enemy.actor.items.find(
         (i) => i.name.toLowerCase() === searchName.toLowerCase()
       );
+      if (originItem) matchedBy = 'name';
       logDebug('searched enemy items by name', {
         search: searchName,
         item: originItem,
       });
     }
+
     originUuid = originItem?.uuid ?? null;
+
+    if (!originUuid) {
+      originUuid = getAuraSourceOriginUuid();
+      if (originUuid) matchedBy = 'effectOrigin';
+    }
+
     if (!originItem) {
       console.warn('[Aura Helper] no matching item found for aura', {
         aura: aura.slug,
@@ -1660,7 +1746,24 @@ async function handleAura({ token, enemy, aura, auraIdentifier, originItem: prov
       });
     }
   }
-  logDebug('resolved originUuid', originUuid);
+
+  if (!originItem && originUuid) {
+    originItem = await fromUuid(originUuid);
+  }
+
+  if (originItem && !originUuid) {
+    originUuid = originItem.uuid ?? null;
+  }
+
+  const resolvedMatchPath = matchedBy ?? (originUuid ? 'effectOrigin' : null);
+  logDebug('resolved aura origin', {
+    auraSlug: aura.slug,
+    auraIdentifier,
+    originUuid,
+    originItemId: originItem?.id ?? null,
+    originItemName: originItem?.name ?? null,
+    matchedBy: resolvedMatchPath,
+  });
   const origin = originItem ?? (originUuid ? await fromUuid(originUuid) : null);
   const auraName = origin?.name ?? aura.slug ?? auraIdentifier ?? 'Unbekannte Aura';
   const auraLink = originUuid ? `@UUID[${originUuid}]{${auraName}}` : auraName;
