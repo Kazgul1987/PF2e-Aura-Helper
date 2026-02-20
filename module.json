@@ -21,6 +21,7 @@
   "download": "https://github.com/Kazgul1987/PF2e-Aura-Helper/releases/latest/download/module.zip",
   "esmodules": [
     "scripts/nymphs-grace.js",
+    "scripts/aura-distance.js",
     "scripts/aura-helper.js",
     "scripts/winter_sleet.js"
   ]
