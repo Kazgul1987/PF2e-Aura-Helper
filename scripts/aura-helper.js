@@ -28,6 +28,7 @@ const SETTING_REQUIRE_VISIBLE_ENEMIES = 'requireVisibleEnemies';
 const SETTING_PUBLIC_CHAT_MESSAGES = 'publicChatMessages';
 const SETTING_INCLUDE_ALLIED_AURAS = 'includeAlliedAuras';
 const SETTING_DEBUG_AURA_TRAIT_SCAN = 'debugAuraTraitScan';
+const SETTING_AURA_DISTANCE_MODE = 'auraDistanceMode';
 const COMBAT_SUPPRESSION_FLAG_KEY = 'suppressedAuras';
 const SETTINGS_KEY_PREFIX = `${MODULE_ID}.`;
 const LOG_LEVELS = {
@@ -35,6 +36,11 @@ const LOG_LEVELS = {
   INFO: 'info',
   DEBUG: 'debug',
   WINTER_SLEET: 'winter-sleet',
+};
+const AURA_DISTANCE_MODES = {
+  EDGE: 'edge',
+  MEDIUM_CENTER_LARGE_EDGE: 'medium-center-large-edge',
+  CENTER: 'center',
 };
 const loggedAuraTraitScanByCombat = new Set();
 
@@ -100,6 +106,14 @@ function shouldIncludeAlliedAuras() {
 
 function shouldLogAuraTraitScan() {
   return game.settings.get(MODULE_ID, SETTING_DEBUG_AURA_TRAIT_SCAN);
+}
+
+function getAuraDistanceMode() {
+  const configuredMode = game.settings.get(MODULE_ID, SETTING_AURA_DISTANCE_MODE);
+  if (Object.values(AURA_DISTANCE_MODES).includes(configuredMode)) {
+    return configuredMode;
+  }
+  return AURA_DISTANCE_MODES.EDGE;
 }
 
 function getSpellSaveDc(actor) {
@@ -1219,6 +1233,20 @@ Hooks.once('init', () => {
     type: Boolean,
     default: false,
   });
+
+  game.settings.register(MODULE_ID, SETTING_AURA_DISTANCE_MODE, {
+    name: 'Aura distance mode',
+    hint: 'Chooses how aura distance is measured. "Edge" keeps current behavior, while the hybrid mode uses center distance for 1x1 tokens and edge distance for larger tokens.',
+    scope: 'world',
+    config: true,
+    type: String,
+    choices: {
+      [AURA_DISTANCE_MODES.EDGE]: 'Edge (current behavior)',
+      [AURA_DISTANCE_MODES.MEDIUM_CENTER_LARGE_EDGE]: 'Hybrid: 1x1 center, larger tokens edge',
+      [AURA_DISTANCE_MODES.CENTER]: 'Center (diagnostic)',
+    },
+    default: AURA_DISTANCE_MODES.EDGE,
+  });
 });
 
 
@@ -1500,6 +1528,43 @@ function getTokenBaseRadiusInGridUnits(tokenLike) {
   return canvas.grid.measureDistance({ x: 0, y: 0 }, { x: baseRadiusPx, y: 0 });
 }
 
+function getTokenDimensionsInSquares(tokenLike) {
+  const document = tokenLike?.document ?? tokenLike;
+  const widthSquares = Number(document?.width ?? tokenLike?.w ?? 1);
+  const heightSquares = Number(document?.height ?? tokenLike?.h ?? 1);
+  const safeWidth = Number.isFinite(widthSquares) ? widthSquares : 1;
+  const safeHeight = Number.isFinite(heightSquares) ? heightSquares : 1;
+
+  return {
+    widthSquares: safeWidth,
+    heightSquares: safeHeight,
+    isSingleSquare: safeWidth <= 1 && safeHeight <= 1,
+  };
+}
+
+function evaluateAuraDistanceMode({ auraRadius, centerDistance, edgeDistance, source, tokenLike }) {
+  const mode = getAuraDistanceMode();
+  const sourceDimensions = getTokenDimensionsInSquares(source);
+  const targetDimensions = getTokenDimensionsInSquares(tokenLike);
+  const bothSingleSquare = sourceDimensions.isSingleSquare && targetDimensions.isSingleSquare;
+
+  if (mode === AURA_DISTANCE_MODES.CENTER) {
+    return { modeApplied: mode, withinAura: centerDistance <= auraRadius };
+  }
+
+  if (mode === AURA_DISTANCE_MODES.MEDIUM_CENTER_LARGE_EDGE && bothSingleSquare) {
+    return {
+      modeApplied: `${mode}:center`,
+      withinAura: centerDistance <= auraRadius,
+    };
+  }
+
+  return {
+    modeApplied: mode === AURA_DISTANCE_MODES.MEDIUM_CENTER_LARGE_EDGE ? `${mode}:edge` : AURA_DISTANCE_MODES.EDGE,
+    withinAura: edgeDistance <= auraRadius,
+  };
+}
+
 function safeContainsToken(aura, tokenDocument) {
   if (typeof aura?.containsToken !== 'function' || !tokenDocument) return null;
 
@@ -1533,7 +1598,27 @@ function isTokenInsideAura(aura, source, tokenLike) {
     const sourceBaseRadiusGrid = getTokenBaseRadiusInGridUnits(source);
     const targetBaseRadiusGrid = getTokenBaseRadiusInGridUnits(tokenLike);
     const edgeDistance = Math.max(0, centerDistance - sourceBaseRadiusGrid - targetBaseRadiusGrid);
-    return edgeDistance <= auraRadius;
+    const distanceEvaluation = evaluateAuraDistanceMode({
+      auraRadius,
+      centerDistance,
+      edgeDistance,
+      source,
+      tokenLike,
+    });
+
+    logDebug('aura distance evaluation', {
+      auraSlug: aura?.slug ?? null,
+      auraRadius,
+      containsTokenResult,
+      modeApplied: distanceEvaluation.modeApplied,
+      centerDistance,
+      edgeDistance,
+      sourceId: source?.id ?? source?.document?.id ?? null,
+      tokenId: tokenDocument?.id ?? null,
+      inside: distanceEvaluation.withinAura,
+    });
+
+    return distanceEvaluation.withinAura;
   }
 
   return false;
