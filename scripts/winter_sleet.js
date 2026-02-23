@@ -21,8 +21,8 @@ const WINTER_SLEET_STANCE_SLUG_CANDIDATES = new Set([
 ]);
 const WINTER_SLEET_AURA_NAME_CANDIDATES = new Set(['kinetic aura']);
 const WINTER_SLEET_STANCE_NAME_CANDIDATES = new Set(['winter sleet']);
-const WINTER_SLEET_STANCE_EFFECT_UUIDS = new Set([
-  'Actor.lDU8jmwuVTfWBIJF.Item.tWgOLni1sodX8tXO',
+const WINTER_SLEET_STANCE_EFFECT_SOURCE_IDS = new Set([
+  'Compendium.pf2e.feat-effects.Item.lge4vtZdfZOCWAch',
 ]);
 const WINTER_SLEET_EVENT_TTL_MS = 5000;
 const WINTER_SLEET_ITEM_REFRESH_DEBOUNCE_MS = 150;
@@ -211,7 +211,9 @@ function hasWinterSleetStance(actor) {
 
 function hasActiveWinterSleetStanceEffect(actor) {
   if (!actor) return false;
-  return actor.itemTypes.effect.some((effect) => WINTER_SLEET_STANCE_EFFECT_UUIDS.has(effect.uuid));
+  return actor.itemTypes.effect.some((effect) =>
+    WINTER_SLEET_STANCE_EFFECT_SOURCE_IDS.has(effect.sourceId)
+  );
 }
 
 function hasActiveKineticAuraEffect(actor) {
