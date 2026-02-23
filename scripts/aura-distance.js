@@ -7,6 +7,13 @@ export const AURA_DISTANCE_MODES = {
   CENTER: 'center',
 };
 
+const AURA_DISTANCE_EPSILON = 0.01;
+
+function isWithinAura(distance, auraRadius) {
+  if (!Number.isFinite(distance) || !Number.isFinite(auraRadius)) return false;
+  return distance <= auraRadius + AURA_DISTANCE_EPSILON;
+}
+
 export function getAuraDistanceMode() {
   const configuredMode = game.settings.get(MODULE_ID, SETTING_AURA_DISTANCE_MODE);
   if (Object.values(AURA_DISTANCE_MODES).includes(configuredMode)) {
@@ -33,21 +40,21 @@ function evaluateAuraDistanceMode({ auraRadius, centerDistance, edgeDistance, so
   const bothSingleSquare = sourceDimensions.isSingleSquare && targetDimensions.isSingleSquare;
 
   if (mode === AURA_DISTANCE_MODES.CENTER) {
-    return { modeApplied: mode, distance: centerDistance, withinAura: centerDistance <= auraRadius };
+    return { modeApplied: mode, distance: centerDistance, withinAura: isWithinAura(centerDistance, auraRadius) };
   }
 
   if (mode === AURA_DISTANCE_MODES.MEDIUM_CENTER_LARGE_EDGE && bothSingleSquare) {
     return {
       modeApplied: `${mode}:center`,
       distance: centerDistance,
-      withinAura: centerDistance <= auraRadius,
+      withinAura: isWithinAura(centerDistance, auraRadius),
     };
   }
 
   return {
     modeApplied: mode === AURA_DISTANCE_MODES.MEDIUM_CENTER_LARGE_EDGE ? `${mode}:edge` : AURA_DISTANCE_MODES.EDGE,
     distance: edgeDistance,
-    withinAura: edgeDistance <= auraRadius,
+    withinAura: isWithinAura(edgeDistance, auraRadius),
   };
 }
 
