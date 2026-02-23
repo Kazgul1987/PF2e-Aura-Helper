@@ -1225,7 +1225,7 @@ Hooks.once('init', () => {
 
   game.settings.register(MODULE_ID, SETTING_AURA_DISTANCE_MODE, {
     name: 'Aura distance mode',
-    hint: 'Chooses how aura distance is measured. "Edge" keeps current behavior, while the hybrid mode uses center distance for 1x1 tokens and edge distance for larger tokens.',
+    hint: 'Chooses how aura distance is measured. "Edge" keeps current behavior, the hybrid mode uses center distance for 1x1 tokens and edge distance for larger tokens, and "Token distance" follows Foundry token.distanceTo semantics.',
     scope: 'world',
     config: true,
     type: String,
@@ -1233,6 +1233,7 @@ Hooks.once('init', () => {
       [AURA_DISTANCE_MODES.EDGE]: 'Edge (current behavior)',
       [AURA_DISTANCE_MODES.MEDIUM_CENTER_LARGE_EDGE]: 'Hybrid: 1x1 center, larger tokens edge',
       [AURA_DISTANCE_MODES.CENTER]: 'Center (diagnostic)',
+      [AURA_DISTANCE_MODES.TOKEN_DISTANCE]: 'Token distance (tooltip-like)',
     },
     default: AURA_DISTANCE_MODES.EDGE,
   });

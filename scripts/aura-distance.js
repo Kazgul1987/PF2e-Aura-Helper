@@ -5,6 +5,7 @@ export const AURA_DISTANCE_MODES = {
   EDGE: 'edge',
   MEDIUM_CENTER_LARGE_EDGE: 'medium-center-large-edge',
   CENTER: 'center',
+  TOKEN_DISTANCE: 'token-distance',
 };
 
 const AURA_DISTANCE_EPSILON = 0.01;
@@ -41,6 +42,22 @@ function measureGridDistance(from, to) {
   return null;
 }
 
+function getPlaceableToken(tokenLike) {
+  if (!tokenLike) return null;
+  if (typeof tokenLike.distanceTo === 'function') return tokenLike;
+  if (typeof tokenLike.object?.distanceTo === 'function') return tokenLike.object;
+  return null;
+}
+
+function measureTokenDistance(source, tokenLike) {
+  const sourceToken = getPlaceableToken(source);
+  const targetToken = getPlaceableToken(tokenLike);
+  if (!sourceToken || !targetToken) return null;
+
+  const distance = sourceToken.distanceTo(targetToken);
+  return Number.isFinite(distance) ? distance : null;
+}
+
 export function getAuraDistanceMode() {
   const configuredMode = game.settings.get(MODULE_ID, SETTING_AURA_DISTANCE_MODE);
   if (Object.values(AURA_DISTANCE_MODES).includes(configuredMode)) {
@@ -62,6 +79,15 @@ function getTokenDimensionsInSquares(tokenLike) {
 }
 
 function evaluateAuraDistanceMode({ auraRadius, centerDistance, edgeDistance, source, tokenLike, mode }) {
+  if (mode === AURA_DISTANCE_MODES.TOKEN_DISTANCE) {
+    const tokenDistance = measureTokenDistance(source, tokenLike);
+    return {
+      modeApplied: mode,
+      distance: tokenDistance,
+      withinAura: isWithinAura(tokenDistance, auraRadius),
+    };
+  }
+
   const sourceDimensions = getTokenDimensionsInSquares(source);
   const targetDimensions = getTokenDimensionsInSquares(tokenLike);
   const bothSingleSquare = sourceDimensions.isSingleSquare && targetDimensions.isSingleSquare;
