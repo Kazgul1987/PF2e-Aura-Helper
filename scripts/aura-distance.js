@@ -14,6 +14,33 @@ function isWithinAura(distance, auraRadius) {
   return distance <= auraRadius + AURA_DISTANCE_EPSILON;
 }
 
+function getPathDistanceFromMeasurement(measurement) {
+  if (Number.isFinite(measurement)) return measurement;
+  if (!measurement || typeof measurement !== 'object') return null;
+
+  if (Number.isFinite(measurement.distance)) return measurement.distance;
+  if (Number.isFinite(measurement.cost)) return measurement.cost;
+
+  return null;
+}
+
+function measureGridDistance(from, to) {
+  if (!from || !to || !canvas?.grid) return null;
+
+  if (typeof canvas.grid.measurePath === 'function') {
+    const pathResult = canvas.grid.measurePath([from, to]);
+    const pathDistance = getPathDistanceFromMeasurement(pathResult);
+    if (Number.isFinite(pathDistance)) return pathDistance;
+  }
+
+  if (typeof canvas.grid.measureDistance === 'function') {
+    const distance = canvas.grid.measureDistance(from, to);
+    if (Number.isFinite(distance)) return distance;
+  }
+
+  return null;
+}
+
 export function getAuraDistanceMode() {
   const configuredMode = game.settings.get(MODULE_ID, SETTING_AURA_DISTANCE_MODE);
   if (Object.values(AURA_DISTANCE_MODES).includes(configuredMode)) {
@@ -88,7 +115,60 @@ function getTokenBaseRadiusInGridUnits(tokenLike) {
   const widthPx = widthSquares * gridSizePx;
   const heightPx = heightSquares * gridSizePx;
   const baseRadiusPx = Math.max(widthPx, heightPx) / 2;
-  return canvas.grid.measureDistance({ x: 0, y: 0 }, { x: baseRadiusPx, y: 0 });
+  const distance = measureGridDistance({ x: 0, y: 0 }, { x: baseRadiusPx, y: 0 });
+  return Number.isFinite(distance) ? distance : 0;
+}
+
+function getTokenBoundaryPoints(tokenLike) {
+  if (!tokenLike) return [];
+
+  const document = tokenLike.document ?? tokenLike;
+  if (!Number.isFinite(document?.x) || !Number.isFinite(document?.y)) return [];
+
+  const gridSize = canvas.grid?.size ?? 1;
+  const widthPx = (document.width ?? tokenLike.w ?? 1) * gridSize;
+  const heightPx = (document.height ?? tokenLike.h ?? 1) * gridSize;
+  const left = document.x;
+  const right = left + widthPx;
+  const top = document.y;
+  const bottom = top + heightPx;
+  const midX = left + widthPx / 2;
+  const midY = top + heightPx / 2;
+
+  return [
+    { x: left, y: top },
+    { x: right, y: top },
+    { x: left, y: bottom },
+    { x: right, y: bottom },
+    { x: midX, y: top },
+    { x: midX, y: bottom },
+    { x: left, y: midY },
+    { x: right, y: midY },
+  ];
+}
+
+function getMinimumTokenEdgeDistance(source, tokenLike, centerDistance) {
+  const sourceBoundaryPoints = getTokenBoundaryPoints(source);
+  const tokenBoundaryPoints = getTokenBoundaryPoints(tokenLike);
+
+  if (sourceBoundaryPoints.length > 0 && tokenBoundaryPoints.length > 0) {
+    let minimumDistance = Infinity;
+
+    for (const sourcePoint of sourceBoundaryPoints) {
+      for (const tokenPoint of tokenBoundaryPoints) {
+        const pairDistance = measureGridDistance(sourcePoint, tokenPoint);
+        if (Number.isFinite(pairDistance) && pairDistance < minimumDistance) {
+          minimumDistance = pairDistance;
+        }
+      }
+    }
+
+    if (Number.isFinite(minimumDistance)) return Math.max(0, minimumDistance);
+  }
+
+  const sourceBaseRadiusGrid = getTokenBaseRadiusInGridUnits(source);
+  const targetBaseRadiusGrid = getTokenBaseRadiusInGridUnits(tokenLike);
+  return Math.max(0, centerDistance - sourceBaseRadiusGrid - targetBaseRadiusGrid);
 }
 
 function safeContainsToken(aura, tokenDocument, onContainsTokenError) {
@@ -137,10 +217,24 @@ export function getAuraRangeCheck(aura, source, tokenLike, { mode = getAuraDista
   const tokenCenter = getCenterForTokenLike(tokenLike);
   const sourceCenter = getCenterForTokenLike(source);
   if (Number.isFinite(auraRadius) && tokenCenter && sourceCenter) {
-    const centerDistance = canvas.grid.measureDistance(tokenCenter, sourceCenter);
-    const sourceBaseRadiusGrid = getTokenBaseRadiusInGridUnits(source);
-    const targetBaseRadiusGrid = getTokenBaseRadiusInGridUnits(tokenLike);
-    const edgeDistance = Math.max(0, centerDistance - sourceBaseRadiusGrid - targetBaseRadiusGrid);
+    const centerDistance = measureGridDistance(tokenCenter, sourceCenter);
+    const edgeDistance = Number.isFinite(centerDistance)
+      ? getMinimumTokenEdgeDistance(source, tokenLike, centerDistance)
+      : null;
+
+    if (!Number.isFinite(centerDistance) || !Number.isFinite(edgeDistance)) {
+      return {
+        distance: null,
+        centerDistance: null,
+        edgeDistance: null,
+        radius: auraRadius,
+        modeApplied: null,
+        inRange: false,
+        usedContainsToken: false,
+        containsTokenResult,
+      };
+    }
+
     const evaluation = evaluateAuraDistanceMode({
       auraRadius,
       centerDistance,
