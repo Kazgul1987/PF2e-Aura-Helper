@@ -207,24 +207,33 @@ function hasWinterSleetStance(actor) {
   return actor.items.some((item) => isWinterSleetStanceItem(item));
 }
 
+function hasActiveWinterSleetStanceEffect(actor) {
+  if (!actor) return false;
+  return actor.itemTypes.effect.some((effect) => isWinterSleetStanceItem(effect));
+}
+
+function hasActiveKineticAuraEffect(actor) {
+  if (!actor) return false;
+  return actor.itemTypes.effect.some((effect) => isWinterSleetAuraItem(effect));
+}
+
 function hasKineticSleetAura() {
   return canvas.tokens.placeables.some((token) => {
     if (!token.actor) return false;
     const sourceEffects = collectWinterSleetSourceDebugEffects(token.actor);
-    const hasAura = token.actor.itemTypes.effect.some((effect) => isWinterSleetAuraItem(effect));
-    const hasStance = hasWinterSleetStance(token.actor);
-    const hasStanceSourceItem = token.actor.itemTypes.effect.some((effect) => isWinterSleetStanceItem(effect));
+    const hasAura = hasActiveKineticAuraEffect(token.actor);
+    const hasStanceFeat = hasWinterSleetStance(token.actor);
+    const hasActiveStance = hasActiveWinterSleetStanceEffect(token.actor);
+    const aura = getKineticAura(token.actor);
     logWinterSleetDebug('hasKineticSleetAura source candidate', {
       sourceToken: token.id,
       hasAura,
-      hasStance,
-      hasStanceSourceItem,
+      hasStanceFeat,
+      hasActiveStance,
+      auraFound: !!aura,
       sourceEffects,
     });
-    return (
-      hasAura &&
-      hasStance
-    );
+    return hasAura && hasActiveStance && !!aura;
   });
 }
 
@@ -259,19 +268,19 @@ function getWinterSleetSourcesForToken(token) {
     if (shouldRequireVisibleEnemies() && !isVisibleToParty(enemy)) return false;
     const aura = getKineticAura(enemy.actor);
     const sourceEffects = collectWinterSleetSourceDebugEffects(enemy.actor);
-    const hasAura = enemy.actor.itemTypes.effect.some((effect) => isWinterSleetAuraItem(effect));
-    const hasStance = hasWinterSleetStance(enemy.actor);
-    const hasStanceSourceItem = enemy.actor.itemTypes.effect.some((effect) => isWinterSleetStanceItem(effect));
+    const hasAura = hasActiveKineticAuraEffect(enemy.actor);
+    const hasStanceFeat = hasWinterSleetStance(enemy.actor);
+    const hasActiveStance = hasActiveWinterSleetStanceEffect(enemy.actor);
     logWinterSleetDebug('Source candidate checked', {
       targetToken: token.id,
       sourceToken: enemy.id,
       auraFound: !!aura,
       hasAura,
-      hasStance,
-      hasStanceSourceItem,
+      hasStanceFeat,
+      hasActiveStance,
       sourceEffects,
     });
-    return hasAura && hasStance && aura;
+    return hasAura && hasActiveStance && !!aura;
   });
 }
 
@@ -295,25 +304,23 @@ async function refreshPlayerAuras() {
       reasons.push('missing-kinetic-aura');
     }
 
-    const hasStance = hasWinterSleetStance(token.actor);
-    if (!hasStance) {
-      reasons.push('missing-winter-sleet-stance');
+    const hasStanceFeat = hasWinterSleetStance(token.actor);
+    const hasActiveStance = hasActiveWinterSleetStanceEffect(token.actor);
+    if (!hasActiveStance) {
+      reasons.push('missing-active-winter-sleet-stance-effect');
     }
 
     const sourceEffects = collectWinterSleetSourceDebugEffects(token.actor);
-    const hasAuraSourceItem = token.actor.itemTypes.effect.some((effect) => isWinterSleetAuraItem(effect));
-    const hasStanceSourceItem = token.actor.itemTypes.effect.some((effect) => isWinterSleetStanceItem(effect));
-    if (!hasAuraSourceItem) reasons.push('missing-aura-effect-item');
-    const hasStanceFallback = hasStance || hasStanceSourceItem;
-    if (!hasStanceFallback) reasons.push('missing-stance-effect-item-and-fallback');
+    const hasAuraSourceItem = hasActiveKineticAuraEffect(token.actor);
+    if (!hasAuraSourceItem) reasons.push('missing-active-kinetic-aura-effect');
 
     if (reasons.length > 0) {
       logWinterSleetDebug('Skipping active source candidate', {
         sourceToken: token.id,
         reasons,
         hasAuraSourceItem,
-        hasStanceSourceItem,
-        hasStanceFallback,
+        hasStanceFeat,
+        hasActiveStance,
         auraSlug: aura?.slug ?? null,
         sourceEffects,
       });
@@ -324,8 +331,8 @@ async function refreshPlayerAuras() {
       sourceToken: token.id,
       auraSlug: aura.slug,
       hasAuraSourceItem,
-      hasStanceSourceItem,
-      hasStanceFallback,
+      hasStanceFeat,
+      hasActiveStance,
       sourceEffects,
     });
     active.set(token.id, { token, aura });
