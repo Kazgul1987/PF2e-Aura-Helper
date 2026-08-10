@@ -3,7 +3,7 @@
   "name": "pf2e-aura-helper",
   "title": "PF2e Aura Helper",
   "description": "Erinnert Spieler, wenn sie ihren Zug in einer feindlichen Aura beginnen und verlinkt die Aura im Chat.",
-  "version": "3.3.1",
+  "version": "4.0.0",
   "type": "module",
   "authors": [
     {
@@ -14,15 +14,13 @@
     "pf2e"
   ],
   "compatibility": {
-    "minimum": "13",
-    "verified": "13"
+    "minimum": "14",
+    "verified": "14"
   },
+  "socket": true,
   "manifest": "https://raw.githubusercontent.com/Kazgul1987/PF2e-Aura-Helper/main/module.json",
   "download": "https://github.com/Kazgul1987/PF2e-Aura-Helper/releases/latest/download/module.zip",
   "esmodules": [
-    "scripts/nymphs-grace.js",
-    "scripts/aura-distance.js",
-    "scripts/aura-helper.js",
-    "scripts/winter_sleet.js"
+    "scripts/aura-helper.js"
   ]
 }

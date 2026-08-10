@@ -1,18 +1,24 @@
+import { ensureNymphsGraceAura, handleNymphsGraceChatMessage, refreshNymphsGraceAuras } from './nymphs-grace.js';
+import { createWinterSleetChatMessage, getWinterSleetSourcesForToken, refreshWinterSleetEffects } from './winter_sleet.js';
 import { AURA_DISTANCE_MODES, getAuraDistanceMode, getAuraRangeCheck } from './aura-distance.js';
+import { MODULE_ID, AuraEventType, SocketMessageType } from './constants.js';
+import { EventDeduplicator } from './utils/deduplicator.js';
+import { getGMIds, isResponsibleGM } from './utils/gm.js';
+import { initializeSocket, emitSocket, registerSocketHandler } from './socket/socket.js';
+import { debug as writeDebug, log as writeLog, warn, error as logError } from './utils/logging.js';
 
 const movementStarts = new Map();
 const currentAuraOccupancy = new Map();
 const wasInAura = new Map();
-const recentAuraEvents = new Map();
-const recentEmitterAuraEvents = new Map();
+const receivedEvents = new EventDeduplicator();
+const emittedEvents = new EventDeduplicator();
 const tokenMovementSequence = new Map();
 
-const MODULE_ID = 'pf2e-aura-helper';
-const AURA_EVENT_TYPE = 'AURA_EVENT';
+const AURA_EVENT_TYPE = SocketMessageType.AURA_EVENT;
 const AURA_EVENT_KINDS = {
-  START_TURN: 'START_TURN',
-  ENTER: 'ENTER',
-  WINTER_SLEET: 'WINTER_SLEET',
+  START_TURN: AuraEventType.START_TURN,
+  ENTER: AuraEventType.ENTER,
+  WINTER_SLEET: AuraEventType.MOVE,
 };
 const AURA_EVENT_TTL_MS = 5000;
 const WINTER_SLEET_AURA_SLUG = 'kinetic-aura';
@@ -79,14 +85,14 @@ function getLogLevel() {
 function logDebug(...args) {
   if (getLogLevel() === LOG_LEVELS.WINTER_SLEET) return;
   if (getLogLevel() !== LOG_LEVELS.DEBUG) return;
-  console.debug('[Aura Helper]', ...args);
+  writeDebug(...args);
 }
 
 function logInfo(...args) {
   const logLevel = getLogLevel();
   if (logLevel === LOG_LEVELS.WINTER_SLEET) return;
   if (logLevel !== LOG_LEVELS.INFO && logLevel !== LOG_LEVELS.DEBUG) return;
-  console.info('[Aura Helper]', ...args);
+  writeLog(...args);
 }
 
 function shouldRequireVisibleEnemies() {
@@ -156,23 +162,6 @@ function getChatDeliveryTargets(whisperToGm) {
   };
 }
 
-function patchChatMessageUserAlias() {
-  const chatMessageClass = CONFIG?.ChatMessage?.documentClass;
-  const prototype = chatMessageClass?.prototype;
-  if (!prototype) return;
-
-  const descriptor = Object.getOwnPropertyDescriptor(prototype, 'user');
-  if (!descriptor?.get || descriptor.set) return;
-
-  Object.defineProperty(prototype, 'user', {
-    configurable: true,
-    enumerable: descriptor.enumerable ?? false,
-    get() {
-      return this.author ?? null;
-    },
-  });
-}
-
 function getAuraEventKey({ combatId, eventKind, tokenId, enemyId, auraSlug, round, turn, eventSequence }) {
   return `${combatId ?? 'none'}:${eventKind}:${tokenId}:${enemyId}:${auraSlug}:${round}:${turn}:${eventSequence ?? 'none'}`;
 }
@@ -185,28 +174,15 @@ function nextTokenMovementSequence(tokenId) {
 }
 
 function isPrimaryActiveGm() {
-  if (!game.user.isGM) return false;
-  const activeGms = game.users
-    .filter((user) => user.isGM && user.active)
-    .sort((a, b) => a.id.localeCompare(b.id));
-  if (activeGms.length === 0) return true;
-  return activeGms[0].id === game.user.id;
+  return isResponsibleGM();
 }
 
-function isDuplicate(cache, payload) {
-  const key = getAuraEventKey(payload);
-  const now = Date.now();
-  for (const [cachedKey, expiresAt] of cache) {
-    if (expiresAt <= now) cache.delete(cachedKey);
-  }
-  const cached = cache.get(key);
-  if (cached && cached > now) return true;
-  cache.set(key, now + AURA_EVENT_TTL_MS);
-  return false;
+function isDuplicate(deduplicator, payload) {
+  return deduplicator.checkAndAdd(getAuraEventKey(payload), AURA_EVENT_TTL_MS);
 }
 
 function emitAuraEvent(payload) {
-  if (isDuplicate(recentEmitterAuraEvents, payload)) {
+  if (isDuplicate(emittedEvents, payload)) {
     logDebug('skip duplicate emit (local)', {
       eventKind: payload.eventKind,
       tokenId: payload.tokenId,
@@ -231,11 +207,7 @@ function emitAuraEvent(payload) {
     turn: payload.turn,
   });
 
-  game.socket.emit(`module.${MODULE_ID}`, payload);
-
-  // Foundry may not deliver socket emissions back to the sender in single-client sessions.
-  // Process locally as well so chat reminders still fire when only one GM client is connected.
-  handleIncomingAuraEvent(payload);
+  emitSocket(SocketMessageType.AURA_EVENT, payload);
 }
 
 function normalizeAuraString(value) {
@@ -746,7 +718,7 @@ async function handleIncomingAuraEvent(payload) {
   ) {
     return;
   }
-  if (isDuplicate(recentAuraEvents, payload)) {
+  if (isDuplicate(receivedEvents, payload)) {
     logDebug('skip duplicate incoming aura event', {
       eventKind: payload.eventKind,
       tokenId: payload.tokenId,
@@ -932,32 +904,27 @@ async function getAuraSuppressionMenuData(combat = game.combat) {
   };
 }
 
-class AuraSuppressionMenuApplication extends Application {
-  static get defaultOptions() {
-    return foundry.utils.mergeObject(super.defaultOptions, {
-      id: `${MODULE_ID}-suppression-menu`,
-      title: 'PF2e Aura Helper',
-      template: `modules/${MODULE_ID}/templates/aura-helper-tab.hbs`,
-      classes: ['pf2e-aura-helper', 'pf2e-aura-helper-tab-window'],
-      width: 520,
-      height: 'auto',
-      resizable: true,
-      popOut: true,
-    });
+const { ApplicationV2, HandlebarsApplicationMixin } = foundry.applications.api;
+
+class AuraSuppressionMenuApplication extends HandlebarsApplicationMixin(ApplicationV2) {
+  static DEFAULT_OPTIONS = {
+    id: `${MODULE_ID}-suppression-menu`,
+    tag: 'form',
+    classes: ['pf2e-aura-helper', 'pf2e-aura-helper-tab-window'],
+    window: { title: 'PF2e Aura Helper', resizable: true },
+    position: { width: 520, height: 'auto' },
+    actions: { toggleSuppression: AuraSuppressionMenuApplication.toggleSuppression },
+  };
+
+  static PARTS = {
+    content: { template: `modules/${MODULE_ID}/templates/aura-helper-tab.hbs` },
+  };
+
+  async _prepareContext() {
+    return getAuraSuppressionMenuData(game.combat);
   }
 
-  async getData() {
-    return await getAuraSuppressionMenuData(game.combat);
-  }
-
-  activateListeners(html) {
-    super.activateListeners(html);
-
-    const root = html?.[0] ?? html;
-    root?.addEventListener('change', (event) => this.onTargetSuppressionChange(event));
-  }
-
-  async onTargetSuppressionChange(event) {
+  static async toggleSuppression(event) {
     const checkbox = event.target?.closest?.('.aura-helper-tab__target-checkbox');
     if (!checkbox) return;
 
@@ -1006,7 +973,7 @@ class AuraSuppressionMenuApplication extends Application {
         const suppressionKey = buildAuraSuppressionKey({ source, auraIdentifier, target });
         const legacySuppressionKey = buildLegacyAuraSuppressionKey({ source, auraIdentifier, target });
         checkbox.checked = previousSuppressed;
-        console.error('[Aura Helper] aura suppression verification mismatch', {
+        logError('aura suppression verification mismatch', {
           ...errorContext,
           expectedSuppressed: suppressed,
           verifiedSuppressed: verificationResult.verifiedSuppressed,
@@ -1031,7 +998,7 @@ class AuraSuppressionMenuApplication extends Application {
       refreshAuraSuppressionMenu();
     } catch (error) {
       checkbox.checked = previousSuppressed;
-      console.error('[Aura Helper] failed to update aura suppression', {
+      logError('failed to update aura suppression', {
         ...errorContext,
         suppressed,
         error,
@@ -1060,24 +1027,25 @@ let auraSuppressionMenuApplication = null;
 
 function refreshAuraSuppressionMenu() {
   if (!auraSuppressionMenuApplication?.rendered) return;
-  auraSuppressionMenuApplication.render(false);
+  auraSuppressionMenuApplication.render({ force: true });
 }
 
 function openAuraSuppressionMenu() {
   if (!game.user?.isGM) return;
 
   auraSuppressionMenuApplication ??= new AuraSuppressionMenuApplication();
-  auraSuppressionMenuApplication.render(true, { focus: true });
+  auraSuppressionMenuApplication.render({ force: true, window: { focus: true } });
 }
 
 function addGmAuraControlsButton(_app, html) {
   if (!game.user?.isGM) return;
 
-  const isV13 = Number(game.release?.generation ?? 0) >= 13;
+  const isV14 = Number(game.release?.generation ?? 0) >= 14;
+  if (!isV14) return;
   const existingControl = document.getElementById('pf2e-aura-helper-chat-control');
   if (existingControl) return;
 
-  if (isV13) {
+  if (isV14) {
     const tabsFlexcol =
       document.getElementsByClassName('tabs')[0]?.getElementsByClassName('flexcol')[0];
     if (!tabsFlexcol) return;
@@ -1146,23 +1114,33 @@ Hooks.once('ready', () => {
     visibilityFilter: shouldRequireVisibleEnemies() ? 'aktiv' : 'inaktiv',
   });
 
-  game.socket.on(`module.${MODULE_ID}`, handleIncomingAuraEvent);
+  registerSocketHandler(SocketMessageType.AURA_EVENT, handleIncomingAuraEvent);
+  initializeSocket();
 });
 
+
+Hooks.on('createItem', async (item) => {
+  await ensureNymphsGraceAura(item.actor);
+  if (isResponsibleGM()) await refreshWinterSleetEffects();
+});
+Hooks.on('deleteItem', async (item) => {
+  await ensureNymphsGraceAura(item.actor);
+  if (isResponsibleGM()) await refreshWinterSleetEffects();
+});
+Hooks.on('updateItem', async (item, changes) => {
+  if (changes?.name !== undefined || changes?.system?.slug !== undefined) await ensureNymphsGraceAura(item.actor);
+  if (isResponsibleGM()) await refreshWinterSleetEffects();
+});
+Hooks.on('createChatMessage', handleNymphsGraceChatMessage);
 Hooks.on('renderSceneNavigation', addGmAuraControlsButton);
 Hooks.on('createCombat', refreshAuraSuppressionMenu);
 Hooks.on('updateCombat', refreshAuraSuppressionMenu);
-Hooks.on('deleteCombat', refreshAuraSuppressionMenu);
 Hooks.on('createCombatant', refreshAuraSuppressionMenu);
 Hooks.on('updateCombatant', refreshAuraSuppressionMenu);
 Hooks.on('deleteCombatant', refreshAuraSuppressionMenu);
 Hooks.on('createToken', refreshAuraSuppressionMenu);
-Hooks.on('updateToken', refreshAuraSuppressionMenu);
-Hooks.on('deleteToken', refreshAuraSuppressionMenu);
 
 Hooks.once('init', () => {
-  patchChatMessageUserAlias();
-
   game.settings.register(MODULE_ID, SETTING_DEBUG_ENABLED, {
     name: 'Enable debug logging (Legacy fallback)',
     hint: 'Legacy option used only if Log level has never been explicitly set.',
@@ -1240,64 +1218,12 @@ Hooks.once('init', () => {
 });
 
 
-function getClassDcFromActor(actor) {
-  const classDC = Number(actor?.system?.attributes?.classDC?.value);
-  if (!Number.isFinite(classDC)) return null;
-  return classDC - 2;
-}
-function isResponsiblePosterForToken(token) {
-  if (!token?.actor) return false;
-  return isPrimaryActiveGm();
-}
-
-async function createWinterSleetChatMessage({ token, source, whisperToGm = false }) {
-  if (!token?.actor || !source?.actor) return;
-  if (!isResponsiblePosterForToken(token)) {
-    logDebug('skip winter sleet chat message', {
-      reason: 'emitter/poster mismatch',
-      tokenId: token.id,
-      tokenName: token.name,
-      currentUserId: game.user.id,
-      isPrimaryActiveGm: isPrimaryActiveGm(),
-    });
-    return;
-  }
-  const stance = source.actor.items.find((item) => item.slug === WINTER_SLEET_STANCE_SLUG);
-  const sourceName = stance?.name ?? 'Winter Sleet';
-  const sourceLink = stance?.uuid ? `@UUID[${stance.uuid}]{${sourceName}}` : sourceName;
-  const dc = getClassDcFromActor(source.actor);
-  const check = dc !== null ? `@Check[acrobatics|dc:${dc}]` : '@Check[acrobatics]';
-  const content = `${token.name} bewegt sich in der Aura ${sourceLink} von ${source.name}: ${check}`;
-  const speaker = ChatMessage.getSpeaker({ token: token.document, actor: token.actor });
-  const delivery = getChatDeliveryTargets(whisperToGm);
-  logDebug('creating winter sleet chat message', {
-    channel: delivery.channel,
-    recipients: delivery.recipients,
-    tokenId: token.id,
-    tokenName: token.name,
-    sourceId: source.id,
-    sourceName: source.name,
-  });
-  await ChatMessage.create({
-    content,
-    speaker,
-    whisper: delivery.whisper,
-  });
-}
-
-function getWinterSleetSources() {
-  const partyMembers = game.actors.party?.members ?? [];
-  if (partyMembers.length === 0) return [];
-
-  return canvas.tokens.placeables.filter((token) => {
-    if (!token.actor) return false;
-    const isPartyMember = partyMembers.some((member) => member.id === token.actor.id);
-    if (!isPartyMember) return false;
-    const effects = token.actor.itemTypes?.effect ?? [];
-    const hasKineticAura = effects.some((effect) => effect.slug === WINTER_SLEET_EFFECT_SLUG);
-    const hasWinterSleet = effects.some((effect) => effect.slug === WINTER_SLEET_STANCE_SLUG);
-    return hasKineticAura && hasWinterSleet && !!token.actor.auras?.get(WINTER_SLEET_AURA_SLUG);
-  });
+function getWinterSleetSources(target = null) {
+  if (target) return getWinterSleetSourcesForToken(target);
+  const tokens = canvas.tokens?.placeables ?? [];
+  return tokens.filter((source) => tokens.some((targetToken) =>
+    targetToken.id !== source.id && getWinterSleetSourcesForToken(targetToken).some((candidate) => candidate.id === source.id)
+  ));
 }
 
 function getPartyTokens() {
@@ -1540,7 +1466,7 @@ function getCurrentStandardAuraHits(token) {
 }
 
 function gmIds() {
-  return game.users.filter((u) => u.isGM).map((u) => u.id);
+  return getGMIds();
 }
 
 function isEmitterForTokenChange(token, userId) {
@@ -1716,7 +1642,7 @@ async function handleAura({ token, enemy, aura, auraIdentifier, originItem: prov
     }
 
     if (!originItem) {
-      console.warn('[Aura Helper] no matching item found for aura', {
+      warn('no matching item found for aura', {
         aura: aura.slug,
         auraIdentifier,
         enemy: enemy.name,
@@ -1771,7 +1697,7 @@ async function handleAura({ token, enemy, aura, auraIdentifier, originItem: prov
     whisper: delivery.whisper,
   });
   if (!origin) {
-    console.warn('[Aura Helper] no item to post for aura', {
+    warn('no item to post for aura', {
       aura: aura.slug,
       auraIdentifier,
       enemy: enemy.name,
@@ -1811,6 +1737,7 @@ async function checkAllCurrentAuraOccupancy({ eventKind = AURA_EVENT_KINDS.ENTER
 
 Hooks.on('pf2e.startTurn', async (combatant) => {
   logCombatNpcAuraTraitSummaryOnce(game.combat, 'pf2e.startTurn');
+  if (isResponsibleGM()) await refreshWinterSleetEffects();
 
   const token = combatant.token?.object ?? combatant.token;
   const activeCombatant = game.combat?.combatant ?? null;
@@ -1912,11 +1839,16 @@ Hooks.on('combatStart', (combat) => {
 });
 
 Hooks.on('deleteCombat', (combat) => {
+  refreshAuraSuppressionMenu();
   if (!combat?.id) return;
   loggedAuraTraitScanByCombat.delete(combat.id);
 });
 
 Hooks.on('updateToken', async (tokenDoc, change, _options, userId) => {
+  refreshAuraSuppressionMenu();
+  if ((change.x !== undefined || change.y !== undefined) && isResponsibleGM()) {
+    await refreshWinterSleetEffects();
+  }
   const token = tokenDoc.object;
   logDebug('hook entry', {
     hookType: 'updateToken',
@@ -2095,6 +2027,7 @@ Hooks.on('moveToken', (token, movement, operation) => {
 });
 
 Hooks.on('deleteToken', (tokenDoc) => {
+  refreshAuraSuppressionMenu();
   movementStarts.delete(tokenDoc.id);
   currentAuraOccupancy.delete(tokenDoc.id);
   wasInAura.delete(tokenDoc.id);
@@ -2106,5 +2039,9 @@ Hooks.on('canvasReady', async () => {
   currentAuraOccupancy.clear();
   wasInAura.clear();
   tokenMovementSequence.clear();
+  if (isResponsibleGM()) {
+    await refreshWinterSleetEffects();
+    await refreshNymphsGraceAuras();
+  }
   await checkAllCurrentAuraOccupancy({ eventKind: AURA_EVENT_KINDS.START_TURN });
 });

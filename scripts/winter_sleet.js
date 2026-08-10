@@ -1,6 +1,8 @@
 import { getAuraDistanceMode, getAuraRangeCheck } from './aura-distance.js';
+import { MODULE_ID } from './constants.js';
+import { getGMIds, isResponsibleGM } from './utils/gm.js';
+import { debug } from './utils/logging.js';
 
-const MODULE_ID = 'pf2e-aura-helper';
 const AURA_FLAG = 'pf2e-aura-helper';
 const AURA_SOURCE_FLAG = 'kinetic-source';
 const WINTER_SLEET_REFRESH_EVENT_TYPE = 'WINTER_SLEET_REFRESH';
@@ -64,7 +66,7 @@ function isDuplicateWinterSleetEvent(payload) {
 }
 
 function gmIds() {
-  return game.users.filter((u) => u.isGM).map((u) => u.id);
+  return getGMIds();
 }
 
 function shouldRequireVisibleEnemies() {
@@ -94,8 +96,7 @@ function shouldLogWinterSleetDebug() {
 }
 
 function logWinterSleetDebug(...args) {
-  if (!shouldLogWinterSleetDebug()) return;
-  console.debug('[Aura Helper:Winter Sleet]', ...args);
+  if (shouldLogWinterSleetDebug()) debug('Winter Sleet', ...args);
 }
 
 function isTokenInsideAura(aura, source, tokenLike) {
@@ -262,7 +263,7 @@ function isVisibleToParty(enemyToken) {
   );
 }
 
-function getWinterSleetSourcesForToken(token) {
+export function getWinterSleetSourcesForToken(token) {
   if (!token?.actor) return [];
   return canvas.tokens.placeables.filter((enemy) => {
     const isHidden = enemy.document?.hidden ?? false;
@@ -288,7 +289,7 @@ function getWinterSleetSourcesForToken(token) {
   });
 }
 
-async function refreshPlayerAuras() {
+export async function refreshWinterSleetEffects() {
   if (!game.user.isGM) return;
 
   const tokens = canvas.tokens.placeables.filter(
@@ -414,39 +415,9 @@ async function refreshPlayerAuras() {
   }
 }
 
-function emitWinterSleetRefresh() {
-  game.socket.emit(`module.${MODULE_ID}`, {
-    type: WINTER_SLEET_REFRESH_EVENT_TYPE,
-  });
-}
-
-function scheduleWinterSleetRefresh() {
-  if (!game.user.isGM) return;
-  if (pendingWinterSleetRefresh) {
-    clearTimeout(pendingWinterSleetRefresh);
-  }
-  pendingWinterSleetRefresh = setTimeout(async () => {
-    pendingWinterSleetRefresh = null;
-    await refreshPlayerAuras();
-  }, WINTER_SLEET_ITEM_REFRESH_DEBOUNCE_MS);
-}
-
-function isRelevantWinterSleetItem(item) {
-  return WINTER_SLEET_RELEVANT_SLUGS.has(item?.slug);
-}
-
-function emitWinterSleetBalance({ tokenId, sourceId }) {
-  game.socket.emit(`module.${MODULE_ID}`, {
-    type: WINTER_SLEET_BALANCE_EVENT_TYPE,
-    tokenId,
-    sourceId,
-    round: game.combat?.round ?? 0,
-    turn: game.combat?.turn ?? 0,
-  });
-}
-
-async function createBalanceChatMessage({ token, source }) {
+export async function createWinterSleetChatMessage({ token, source }) {
   if (!token?.actor || !source?.actor) return;
+  if (!isResponsibleGM()) return;
   const stance = source.actor.items.find((i) => i.slug === WINTER_SLEET_STANCE_SLUG) ?? null;
   const sourceName = stance?.name ?? 'Winter Sleet';
   const sourceLink = stance?.uuid ? `@UUID[${stance.uuid}]{${sourceName}}` : sourceName;
@@ -455,139 +426,3 @@ async function createBalanceChatMessage({ token, source }) {
   const speaker = ChatMessage.getSpeaker({ token: token.document, actor: token.actor });
   await ChatMessage.create({ content, speaker, whisper: shouldWhisperToGm() ? gmIds() : undefined });
 }
-
-Hooks.once('ready', () => {
-  game.socket.on(`module.${MODULE_ID}`, async (payload) => {
-    if (!game.user.isGM || !payload) return;
-
-    if (payload.type === WINTER_SLEET_REFRESH_EVENT_TYPE) {
-      await refreshPlayerAuras();
-      return;
-    }
-
-    if (payload.type !== WINTER_SLEET_BALANCE_EVENT_TYPE) return;
-    if (isDuplicateWinterSleetEvent(payload)) return;
-
-    const token = canvas.tokens.get(payload.tokenId);
-    const source = canvas.tokens.get(payload.sourceId);
-    if (!token || !source) return;
-    await createBalanceChatMessage({ token, source });
-  });
-});
-
-Hooks.on('pf2e.startTurn', async () => {
-  if (!hasKineticSleetAura()) return;
-  if (game.user.isGM) {
-    await refreshPlayerAuras();
-    return;
-  }
-  emitWinterSleetRefresh();
-});
-
-Hooks.on('updateToken', async (tokenDoc, change) => {
-  if (change.x === undefined && change.y === undefined) return;
-
-  const token = tokenDoc.object;
-  if (!token) return;
-  const changedTokenDocument = getTokenDocumentAtChange(tokenDoc, change);
-
-  if (game.user.isGM) {
-    scheduleWinterSleetRefresh();
-    return;
-  }
-
-  if (!hasKineticSleetAura()) return;
-
-  if (!isResponsibleOwnerClient(token)) return;
-  const partyMembers = game.actors.party?.members ?? [];
-  const isPartyMember = partyMembers.some((member) => member.id === token.actor?.id);
-
-  const sources = getWinterSleetSourcesForToken(token);
-
-  if (token._movement) {
-    if (!movementStarts.has(token.id)) {
-      const startMap = new Map();
-      const movementStartDocument = getDocumentAtMovementStart(token) ?? token.document;
-      for (const source of sources) {
-        const aura = source.actor.auras?.get(WINTER_SLEET_AURA_SLUG);
-        const kineticAura = aura ?? getKineticAura(source.actor);
-        if (!kineticAura) continue;
-        startMap.set(source.id, isTokenInsideAura(kineticAura, source, movementStartDocument));
-      }
-      movementStarts.set(token.id, startMap);
-    }
-    emitWinterSleetRefresh();
-    return;
-  }
-
-  scheduleMovementCompletion(token, async () => {
-    const startMap = movementStarts.get(token.id) ?? new Map();
-    movementStarts.delete(token.id);
-
-    for (const source of sources) {
-      if (!isPartyMember) continue;
-      const aura = source.actor.auras?.get(WINTER_SLEET_AURA_SLUG);
-      const kineticAura = aura ?? getKineticAura(source.actor);
-      if (!kineticAura) continue;
-      const startedInside = startMap.get(source.id) ?? false;
-      const endRangeCheck = getAuraRangeCheck(kineticAura, source, changedTokenDocument ?? token.document, {
-        mode: getAuraDistanceMode(),
-      });
-      const endedInside = endRangeCheck.inRange;
-
-      logWinterSleetDebug('Winter Sleet movement range comparison', {
-        token: token.id,
-        sourceId: source.id,
-        distance: endRangeCheck.distance,
-        centerDistance: endRangeCheck.centerDistance,
-        edgeDistance: endRangeCheck.edgeDistance,
-        radius: endRangeCheck.radius,
-        modeApplied: endRangeCheck.modeApplied,
-        inRange: endedInside,
-        startedInside,
-      });
-
-      if (startedInside || endedInside) {
-        emitWinterSleetBalance({ tokenId: token.id, sourceId: source.id });
-      }
-    }
-
-    emitWinterSleetRefresh();
-  });
-});
-
-Hooks.on('createItem', (item) => {
-  if (!game.user.isGM || !isRelevantWinterSleetItem(item)) return;
-  scheduleWinterSleetRefresh();
-});
-
-Hooks.on('deleteItem', (item) => {
-  if (!game.user.isGM || !isRelevantWinterSleetItem(item)) return;
-  scheduleWinterSleetRefresh();
-});
-
-Hooks.on('updateItem', (item, changed) => {
-  if (!game.user.isGM) return;
-  const changedSlug = changed?.slug;
-  if (!isRelevantWinterSleetItem(item) && !WINTER_SLEET_RELEVANT_SLUGS.has(changedSlug)) {
-    return;
-  }
-  scheduleWinterSleetRefresh();
-});
-
-Hooks.on('deleteToken', (tokenDoc) => {
-  movementStarts.delete(tokenDoc.id);
-  const pending = pendingMovementCompletions.get(tokenDoc.id);
-  if (pending) clearTimeout(pending);
-  pendingMovementCompletions.delete(tokenDoc.id);
-});
-
-Hooks.on('canvasReady', () => {
-  movementStarts.clear();
-  for (const timeoutId of pendingMovementCompletions.values()) {
-    clearTimeout(timeoutId);
-  }
-  pendingMovementCompletions.clear();
-  if (!game.user.isGM) return;
-  refreshPlayerAuras();
-});
