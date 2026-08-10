@@ -2,9 +2,16 @@
 
 This Foundry VTT module reminds players when they start their turn inside a hostile aura. It automatically posts a chat message with a link to the relevant aura so required rolls can be made directly from chat.
 
+## Architecture
+
+- `scripts/aura-helper.js` owns hook registration, generic aura occupancy, movement events, suppression state, and the GM application.
+- `scripts/winter_sleet.js` owns Winter Sleet identification, Balance reminders, and its PF2e off-guard effect.
+- `scripts/nymphs-grace.js` owns Nymph's Grace identification and its generated Aura Rule Element.
+- `scripts/socket/socket.js` is the module's single socket boundary; utilities under `scripts/utils/` provide GM election, logging, and bounded event deduplication.
+
 ## Usage
 
-1. Install the module in Foundry VTT (v13) and enable it in your world.
+1. Install the module in Foundry VTT (v14) and enable it in your world.
 2. On module startup, PF2e Aura Helper writes the active mode to the console (public vs. GM whisper, hostile-only vs. also allied auras, visibility filter enabled/disabled).
 3. At the start of a player turn or when entering an aura, the module checks the configured aura sources.
 4. If an aura is found, a chat reminder appears with an aura link (public or GM whisper, depending on settings).
