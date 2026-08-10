@@ -5,6 +5,8 @@ const NGP_FLAG_KEY = 'nymphs-grace-aura';
 const NGP_AURA_SLUG = 'nymphs-grace';
 const NGP_AURA_ITEM_NAME = "Nymph's Grace (Aura)";
 const NGP_NAME_RE = /nymph['’]s\s+grace/i;
+// No stable PF2e source UUID is known for the source effect at present.
+const NYMPHS_GRACE_SOURCE_IDS = new Set();
 
 const processedChatMessages = new EventDeduplicator();
 
@@ -12,8 +14,8 @@ function hasNymphsGraceSourceEffect(actor) {
   if (!actor) return false;
   return actor.itemTypes.effect.some((effect) => {
     const slug = effect.slug ?? effect.system?.slug ?? '';
-    const sourceSlug = effect.flags?.pf2e?.sourceId?.split('.').at(-1) ?? '';
-    const isNymphsGrace = slug === NGP_AURA_SLUG || sourceSlug === NGP_AURA_SLUG || NGP_NAME_RE.test(effect.name ?? '');
+    const sourceId = effect.sourceId ?? '';
+    const isNymphsGrace = slug === NGP_AURA_SLUG || NYMPHS_GRACE_SOURCE_IDS.has(sourceId) || NGP_NAME_RE.test(effect.name ?? '');
     return isNymphsGrace && effect.getFlag(MODULE_ID, NGP_FLAG_KEY) !== true;
   });
 }
