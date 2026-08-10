@@ -1,12 +1,12 @@
 import { getAuraDistanceMode, getAuraRangeCheck } from './aura-distance.js';
 import { MODULE_ID } from './constants.js';
+import { AuraEventType, SocketMessageType } from './constants.js';
+import { EventDeduplicator } from './utils/deduplicator.js';
 import { getGMIds, isResponsibleGM } from './utils/gm.js';
-import { debug } from './utils/logging.js';
+import { debugWinterSleet as logWinterSleetDebug } from './utils/logging.js';
 
 const AURA_FLAG = 'pf2e-aura-helper';
 const AURA_SOURCE_FLAG = 'kinetic-source';
-const WINTER_SLEET_REFRESH_EVENT_TYPE = 'WINTER_SLEET_REFRESH';
-const WINTER_SLEET_BALANCE_EVENT_TYPE = 'WINTER_SLEET_BALANCE';
 const WINTER_SLEET_AURA_SLUG = 'kinetic-aura';
 const WINTER_SLEET_EFFECT_AURA_SLUG = 'effect-kinetic-aura';
 const WINTER_SLEET_STANCE_SLUG = 'stance-winter-sleet';
@@ -16,53 +16,20 @@ const WINTER_SLEET_AURA_SLUG_CANDIDATES = new Set([
   'kinetic aura',
   'effect kinetic aura',
 ]);
-const WINTER_SLEET_STANCE_SLUG_CANDIDATES = new Set([
-  WINTER_SLEET_STANCE_SLUG,
-  'winter-sleet',
-  'winter sleet',
-]);
 const WINTER_SLEET_AURA_NAME_CANDIDATES = new Set(['kinetic aura']);
-const WINTER_SLEET_STANCE_NAME_CANDIDATES = new Set(['winter sleet']);
 const WINTER_SLEET_STANCE_EFFECT_SOURCE_IDS = new Set([
   'Compendium.pf2e.feat-effects.Item.lge4vtZdfZOCWAch',
 ]);
 const WINTER_SLEET_EVENT_TTL_MS = 5000;
-const WINTER_SLEET_ITEM_REFRESH_DEBOUNCE_MS = 150;
-const WINTER_SLEET_RELEVANT_SLUGS = new Set([
-  WINTER_SLEET_AURA_SLUG,
-  WINTER_SLEET_EFFECT_AURA_SLUG,
-  WINTER_SLEET_STANCE_SLUG,
-]);
-const SETTING_DEBUG_ENABLED = 'debugEnabled';
-const SETTING_LOG_LEVEL = 'logLevel';
-const LOG_LEVELS = {
-  OFF: 'off',
-  INFO: 'info',
-  DEBUG: 'debug',
-  WINTER_SLEET: 'winter-sleet',
-};
 const SETTING_REQUIRE_VISIBLE_ENEMIES = 'requireVisibleEnemies';
 const SETTING_PUBLIC_CHAT_MESSAGES = 'publicChatMessages';
 
-const movementStarts = new Map();
-const recentWinterSleetEvents = new Map();
-const pendingMovementCompletions = new Map();
-let pendingWinterSleetRefresh = null;
+const movementStartOccupancy = new Map();
+const currentOccupancy = new Map();
+const winterSleetEvents = new EventDeduplicator();
 
-function getWinterSleetEventKey({ type, tokenId, sourceId, round, turn }) {
-  return `${type}:${tokenId}:${sourceId}:${round}:${turn}`;
-}
-
-function isDuplicateWinterSleetEvent(payload) {
-  const key = getWinterSleetEventKey(payload);
-  const now = Date.now();
-  for (const [cachedKey, expiresAt] of recentWinterSleetEvents) {
-    if (expiresAt <= now) recentWinterSleetEvents.delete(cachedKey);
-  }
-  const cached = recentWinterSleetEvents.get(key);
-  if (cached && cached > now) return true;
-  recentWinterSleetEvents.set(key, now + WINTER_SLEET_EVENT_TTL_MS);
-  return false;
+function getWinterSleetEventKey({ eventKind, tokenId, enemyId, combatId, round, turn, eventSequence }) {
+  return ['winter-sleet', eventKind, combatId ?? 'no-combat', tokenId, enemyId, round, turn, eventSequence ?? 'none'].join(':');
 }
 
 function gmIds() {
@@ -79,52 +46,8 @@ function shouldWhisperToGm() {
   return !game.settings.get(MODULE_ID, SETTING_PUBLIC_CHAT_MESSAGES);
 }
 
-function getLogLevel() {
-  const key = `${MODULE_ID}.${SETTING_LOG_LEVEL}`;
-  if (game.settings?.settings?.has(key)) {
-    const configuredLogLevel = game.settings.get(MODULE_ID, SETTING_LOG_LEVEL);
-    if (Object.values(LOG_LEVELS).includes(configuredLogLevel)) return configuredLogLevel;
-  }
-
-  if (!game.settings?.settings?.has(`${MODULE_ID}.${SETTING_DEBUG_ENABLED}`)) return LOG_LEVELS.OFF;
-  return game.settings.get(MODULE_ID, SETTING_DEBUG_ENABLED) ? LOG_LEVELS.DEBUG : LOG_LEVELS.OFF;
-}
-
-function shouldLogWinterSleetDebug() {
-  const logLevel = getLogLevel();
-  return logLevel === LOG_LEVELS.DEBUG || logLevel === LOG_LEVELS.WINTER_SLEET;
-}
-
-function logWinterSleetDebug(...args) {
-  if (shouldLogWinterSleetDebug()) debug('Winter Sleet', ...args);
-}
-
 function isTokenInsideAura(aura, source, tokenLike) {
   return getAuraRangeCheck(aura, source, tokenLike, { mode: getAuraDistanceMode() }).inRange;
-}
-
-function getTokenDocumentAtChange(tokenDoc, change) {
-  if (!tokenDoc) return null;
-  if (change.x === undefined && change.y === undefined) return tokenDoc;
-  return tokenDoc.clone(
-    {
-      x: change.x ?? tokenDoc.x,
-      y: change.y ?? tokenDoc.y,
-    },
-    { keepId: true }
-  );
-}
-
-function scheduleMovementCompletion(token, task) {
-  const existing = pendingMovementCompletions.get(token.id);
-  if (existing) clearTimeout(existing);
-
-  const timeoutId = setTimeout(async () => {
-    pendingMovementCompletions.delete(token.id);
-    await task();
-  }, 0);
-
-  pendingMovementCompletions.set(token.id, timeoutId);
 }
 
 function getDocumentAtMovementStart(token) {
@@ -139,22 +62,6 @@ function getDocumentAtMovementStart(token) {
   const y = startPoint.y - height / 2;
 
   return token.document.clone({ x, y }, { keepId: true });
-}
-
-function isResponsibleOwnerClient(token) {
-  if (!token?.actor || game.user.isGM) return false;
-  if (!token.actor.testUserPermission(game.user, 'OWNER')) return false;
-
-  const ownership = token.actor.ownership ?? {};
-  const ownerUsers = game.users.filter((user) => {
-    if (user.isGM || !user.active) return false;
-    const level = ownership[user.id] ?? ownership.default ?? 0;
-    return level >= CONST.DOCUMENT_OWNERSHIP_LEVELS.OWNER;
-  });
-
-  if (ownerUsers.length === 0) return true;
-  ownerUsers.sort((a, b) => a.id.localeCompare(b.id));
-  return ownerUsers[0].id === game.user.id;
 }
 
 function getKineticAura(actor) {
@@ -189,14 +96,6 @@ function isWinterSleetAuraItem(item) {
   );
 }
 
-function isWinterSleetStanceItem(item) {
-  return matchesWinterSleetCandidates(
-    item,
-    WINTER_SLEET_STANCE_SLUG_CANDIDATES,
-    WINTER_SLEET_STANCE_NAME_CANDIDATES
-  );
-}
-
 function collectWinterSleetSourceDebugEffects(actor) {
   return actor?.itemTypes?.effect?.map((effect) => ({
     slug: effect.slug ?? null,
@@ -220,26 +119,6 @@ function hasActiveWinterSleetStanceEffect(actor) {
 function hasActiveKineticAuraEffect(actor) {
   if (!actor) return false;
   return actor.itemTypes.effect.some((effect) => isWinterSleetAuraItem(effect));
-}
-
-function hasKineticSleetAura() {
-  return canvas.tokens.placeables.some((token) => {
-    if (!token.actor) return false;
-    const sourceEffects = collectWinterSleetSourceDebugEffects(token.actor);
-    const hasAura = hasActiveKineticAuraEffect(token.actor);
-    const hasStanceFeat = hasWinterSleetStance(token.actor);
-    const hasActiveStance = hasActiveWinterSleetStanceEffect(token.actor);
-    const aura = getKineticAura(token.actor);
-    logWinterSleetDebug('hasKineticSleetAura source candidate', {
-      sourceToken: token.id,
-      hasAura,
-      hasStanceFeat,
-      hasActiveStance,
-      auraFound: !!aura,
-      sourceEffects,
-    });
-    return hasAura && hasActiveStance && !!aura;
-  });
 }
 
 function getPartyTokens() {
@@ -287,6 +166,108 @@ export function getWinterSleetSourcesForToken(token) {
     });
     return hasAura && hasActiveStance && !!aura;
   });
+}
+
+export function getWinterSleetSuppressionEntries(target) {
+  return getWinterSleetSourcesForToken(target).map((source) => ({
+    source,
+    auraIdentifier: WINTER_SLEET_AURA_SLUG,
+    auraName: 'Winter Sleet',
+  }));
+}
+
+/**
+ * Handles the Winter Sleet rule for a generic completed token movement.
+ * The Foundry hook remains registered by aura-helper; all feature decisions live here.
+ */
+export function handleAuraMovement({ targetToken, movementSequence, emitAuraEvent }) {
+  if (!targetToken?.actor) return;
+  const sources = getWinterSleetSourcesForToken(targetToken);
+
+  if (targetToken._movement) {
+    const starts = new Map();
+    const movementStartDocument = getDocumentAtMovementStart(targetToken) ?? targetToken.document;
+    const occupancy = currentOccupancy.get(targetToken.id) ?? new Map();
+    for (const source of sources) {
+      const aura = getKineticAura(source.actor);
+      if (!aura) continue;
+      const key = source.id;
+      const startedInside = isTokenInsideAura(aura, source, movementStartDocument);
+      starts.set(key, startedInside);
+      startedInside ? occupancy.set(key, true) : occupancy.delete(key);
+    }
+    movementStartOccupancy.set(targetToken.id, starts);
+    occupancy.size ? currentOccupancy.set(targetToken.id, occupancy) : currentOccupancy.delete(targetToken.id);
+    return;
+  }
+
+  const starts = movementStartOccupancy.get(targetToken.id) ?? new Map();
+  movementStartOccupancy.delete(targetToken.id);
+  const occupancy = currentOccupancy.get(targetToken.id) ?? new Map();
+  for (const source of sources) {
+    const aura = getKineticAura(source.actor);
+    if (!aura) continue;
+    const previousInside = (starts.has(source.id) ? starts.get(source.id) : occupancy.get(source.id)) ?? false;
+    const currentInside = isTokenInsideAura(aura, source, targetToken);
+    if ((!previousInside && currentInside) || (previousInside && currentInside)) {
+      emitAuraEvent({
+        type: SocketMessageType.AURA_EVENT,
+        eventKind: AuraEventType.MOVE,
+        tokenId: targetToken.id,
+        enemyId: source.id,
+        auraSlug: aura.slug ?? WINTER_SLEET_AURA_SLUG,
+        auraIdentifier: WINTER_SLEET_AURA_SLUG,
+        combatId: game.combat?.id ?? null,
+        round: game.combat?.round ?? 0,
+        turn: game.combat?.turn ?? 0,
+        eventSequence: movementSequence,
+      });
+    }
+    currentInside ? occupancy.set(source.id, true) : occupancy.delete(source.id);
+  }
+  occupancy.size ? currentOccupancy.set(targetToken.id, occupancy) : currentOccupancy.delete(targetToken.id);
+}
+
+export async function handleWinterSleetTurn() {
+  if (isResponsibleGM()) await refreshWinterSleetEffects();
+}
+
+export async function handleWinterSleetTokenUpdate({ change }) {
+  if ((change?.x !== undefined || change?.y !== undefined) && isResponsibleGM()) {
+    await refreshWinterSleetEffects();
+  }
+}
+
+export async function handleWinterSleetItemChange() {
+  if (isResponsibleGM()) await refreshWinterSleetEffects();
+}
+
+export async function handleWinterSleetCanvasReady() {
+  clearWinterSleetMovementState();
+  if (isResponsibleGM()) await refreshWinterSleetEffects();
+}
+
+export async function handleWinterSleetAuraEvent(payload, { token, source } = {}) {
+  if (![AuraEventType.ENTER, AuraEventType.MOVE, AuraEventType.START_TURN].includes(payload?.eventKind)) return false;
+  if (!token?.actor || !source?.actor || !getWinterSleetSourcesForToken(token).some((candidate) => candidate.id === source.id)) {
+    return false;
+  }
+  // The updateToken movement pipeline owns entry/within triggers for this feature.
+  if (payload.eventKind === AuraEventType.ENTER) return true;
+  if (winterSleetEvents.checkAndAdd(getWinterSleetEventKey(payload), WINTER_SLEET_EVENT_TTL_MS)) return true;
+  await createWinterSleetChatMessage({ token, source, eventKind: payload.eventKind });
+  return true;
+}
+
+export function clearWinterSleetMovementState(tokenId = null) {
+  if (tokenId) {
+    movementStartOccupancy.delete(tokenId);
+    currentOccupancy.delete(tokenId);
+    return;
+  }
+  movementStartOccupancy.clear();
+  currentOccupancy.clear();
+  winterSleetEvents.clear();
 }
 
 export async function refreshWinterSleetEffects() {
@@ -415,13 +396,15 @@ export async function refreshWinterSleetEffects() {
   }
 }
 
-export async function createWinterSleetChatMessage({ token, source }) {
+export async function createWinterSleetChatMessage({ token, source, eventKind = AuraEventType.MOVE }) {
   if (!token?.actor || !source?.actor) return;
   if (!isResponsibleGM()) return;
   const stance = source.actor.items.find((i) => i.slug === WINTER_SLEET_STANCE_SLUG) ?? null;
   const sourceName = stance?.name ?? 'Winter Sleet';
   const sourceLink = stance?.uuid ? `@UUID[${stance.uuid}]{${sourceName}}` : sourceName;
-  const content = `${token.name} bewegt sich in der Aura ${sourceLink} von ${source.name} und muss einen Balance-Check ablegen.`;
+  const content = eventKind === AuraEventType.START_TURN
+    ? `${token.name} beginnt seinen Zug innerhalb der Aura ${sourceLink} von ${source.name}.`
+    : `${token.name} bewegt sich in der Aura ${sourceLink} von ${source.name} und muss einen Balance-Check ablegen.`;
 
   const speaker = ChatMessage.getSpeaker({ token: token.document, actor: token.actor });
   await ChatMessage.create({ content, speaker, whisper: shouldWhisperToGm() ? gmIds() : undefined });
